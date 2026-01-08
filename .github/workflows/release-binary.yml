@@ -1,0 +1,67 @@
+name: release-binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+      brave_core_ref:
+        description: "brave-core ref (branch, tag, or SHA)"
+        required: false
+        default: "main"
+      brave_core_repo:
+        description: "brave-core repo (owner/name)"
+        required: false
+        default: "lake-of-fire/brave-core"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout swift-brave
+        uses: actions/checkout@v4
+
+      - name: Checkout brave-core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.brave_core_repo }}
+          ref: ${{ inputs.brave_core_ref }}
+          path: brave-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build swift-brave
+        run: |
+          set -euo pipefail
+          ./brave-core/make-spm "$GITHUB_WORKSPACE"
+
+      - name: Zip xcframework
+        run: |
+          set -euo pipefail
+          cd Binary
+          zip -r ../BraveAdblockCore.xcframework.zip BraveAdblockCore.xcframework
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          set -euo pipefail
+          checksum=$(swift package compute-checksum BraveAdblockCore.xcframework.zip)
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+          echo "$checksum" > BraveAdblockCore.xcframework.checksum
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            BraveAdblockCore.xcframework.zip
+            BraveAdblockCore.xcframework.checksum
