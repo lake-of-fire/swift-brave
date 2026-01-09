@@ -9,7 +9,7 @@ on:
       brave_core_ref:
         description: "brave-core ref (branch, tag, or SHA)"
         required: false
-        default: "main"
+        default: "master"
       brave_core_repo:
         description: "brave-core repo (owner/name)"
         required: false
@@ -22,6 +22,9 @@ jobs:
   build-release:
     if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: macos-14
+    env:
+      BRAVE_CORE_REPO: ${{ github.event.inputs.brave_core_repo || 'lake-of-fire/brave-core' }}
+      BRAVE_CORE_REF: ${{ github.event.inputs.brave_core_ref || 'master' }}
     steps:
       - name: Checkout swift-brave
         uses: actions/checkout@v4
@@ -29,9 +32,10 @@ jobs:
       - name: Checkout brave-core
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.brave_core_repo || 'lake-of-fire/brave-core' }}
-          ref: ${{ inputs.brave_core_ref || 'main' }}
+          repository: ${{ env.BRAVE_CORE_REPO }}
+          ref: ${{ env.BRAVE_CORE_REF }}
           path: brave-core
+          token: ${{ secrets.BRAVE_CORE_TOKEN || github.token }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
