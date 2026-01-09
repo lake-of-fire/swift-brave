@@ -37,6 +37,17 @@ jobs:
           path: brave-core
           token: ${{ secrets.BRAVE_CORE_TOKEN || github.token }}
 
+      - name: Ensure templates present
+        run: |
+          set -euo pipefail
+          if [ ! -d "brave-core/spm/templates/swift-brave" ]; then
+            git -C brave-core checkout HEAD -- spm/templates/swift-brave
+          fi
+          if [ ! -d "brave-core/spm/templates/swift-brave" ]; then
+            echo "Missing templates at brave-core/spm/templates/swift-brave"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
