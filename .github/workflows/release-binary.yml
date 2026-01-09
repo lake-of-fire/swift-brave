@@ -1,11 +1,11 @@
 name: release-binary
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Release tag (e.g. v0.1.0)"
-        required: true
       brave_core_ref:
         description: "brave-core ref (branch, tag, or SHA)"
         required: false
@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   build-release:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: macos-14
     steps:
       - name: Checkout swift-brave
@@ -28,8 +29,8 @@ jobs:
       - name: Checkout brave-core
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.brave_core_repo }}
-          ref: ${{ inputs.brave_core_ref }}
+          repository: ${{ inputs.brave_core_repo || 'lake-of-fire/brave-core' }}
+          ref: ${{ inputs.brave_core_ref || 'main' }}
           path: brave-core
 
       - name: Install Rust toolchain
@@ -56,12 +57,74 @@ jobs:
           echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
           echo "$checksum" > BraveAdblockCore.xcframework.checksum
 
+      - name: Set release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          short_sha=$(git rev-parse --short=12 HEAD)
+          echo "tag=binary-${short_sha}" >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
           target_commitish: ${{ github.sha }}
           files: |
             BraveAdblockCore.xcframework.zip
             BraveAdblockCore.xcframework.checksum
+
+      - name: Update Package.swift for binary target
+        run: |
+          set -euo pipefail
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.tag.outputs.tag }}/BraveAdblockCore.xcframework.zip"
+          checksum="${{ steps.checksum.outputs.checksum }}"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          import os
+
+          package_path = Path("Package.swift")
+          text = package_path.read_text()
+          url = os.environ["BINARY_URL"]
+          checksum = os.environ["BINARY_CHECKSUM"]
+          replacement = (
+              '.binaryTarget(\n'
+              '            name: "BraveAdblockCore",\n'
+              f'            url: "{url}",\n'
+              f'            checksum: "{checksum}"\n'
+              '        )'
+          )
+
+          pattern_path = re.compile(
+              r'\\.binaryTarget\\(\\s*name:\\s*"BraveAdblockCore"\\s*,\\s*path:\\s*"Binary/BraveAdblockCore\\.xcframework"\\s*\\)',
+              re.DOTALL,
+          )
+          pattern_url = re.compile(
+              r'\\.binaryTarget\\(\\s*name:\\s*"BraveAdblockCore"\\s*,\\s*url:\\s*".*?"\\s*,\\s*checksum:\\s*".*?"\\s*\\)',
+              re.DOTALL,
+          )
+
+          if pattern_url.search(text):
+              text = pattern_url.sub(replacement, text, count=1)
+          else:
+              text = pattern_path.sub(replacement, text, count=1)
+
+          package_path.write_text(text)
+          PY
+        env:
+          BINARY_URL: ${{ format('https://github.com/{0}/releases/download/{1}/BraveAdblockCore.xcframework.zip', github.repository, steps.tag.outputs.tag) }}
+          BINARY_CHECKSUM: ${{ steps.checksum.outputs.checksum }}
+
+      - name: Commit manifest update
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          if git diff --cached --quiet; then
+            echo "No Package.swift changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update binary target [skip ci]"
+          git push
