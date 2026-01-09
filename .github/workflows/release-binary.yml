@@ -25,6 +25,7 @@ jobs:
     env:
       BRAVE_CORE_REPO: ${{ github.event.inputs.brave_core_repo || 'lake-of-fire/brave-core' }}
       BRAVE_CORE_REF: ${{ github.event.inputs.brave_core_ref || 'master' }}
+      BRAVE_CORE_TOKEN: ${{ secrets.BRAVE_CORE_TOKEN }}
     steps:
       - name: Checkout swift-brave
         uses: actions/checkout@v4
@@ -56,14 +57,17 @@ jobs:
             tmp_dir="$(mktemp -d)"
             archive_path="${tmp_dir}/brave-core.tar.gz"
             if [ -n "$auth_header" ]; then
-              curl -L -H "$auth_header" "$archive_url" -o "$archive_path"
+              curl -fL -H "$auth_header" "$archive_url" -o "$archive_path"
             else
-              curl -L "$archive_url" -o "$archive_path"
+              curl -fL "$archive_url" -o "$archive_path"
             fi
+            tar -xzf "$archive_path" -C "$tmp_dir"
             prefix="$(tar -tf "$archive_path" | head -1 | cut -d/ -f1)"
-            mkdir -p brave-core/spm/templates
-            tar -xzf "$archive_path" -C brave-core/spm/templates --strip-components=3 \
-              "${prefix}/spm/templates/swift-brave"
+            src_path="${tmp_dir}/${prefix}/spm/templates/swift-brave"
+            if [ -d "$src_path" ]; then
+              mkdir -p brave-core/spm/templates
+              cp -R "$src_path" brave-core/spm/templates/
+            fi
           fi
           if [ ! -d "brave-core/spm/templates/swift-brave" ]; then
             echo "Missing templates at brave-core/spm/templates/swift-brave"
