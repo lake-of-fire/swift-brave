@@ -16,9 +16,9 @@ let package = Package(
     targets: [
         .binaryTarget(
                     name: "BraveAdblockCore",
-                    url: "https://github.com/lake-of-fire/swift-brave/releases/download/binary-34fee33100a7/BraveAdblockCore.xcframework.zip",
-                    checksum: "2bc32d3c92f23939c27bf83b46da13d2acbbfd436169ec76881fb4ee5bce78d6"
-                )
+                    url: "https://github.com/lake-of-fire/swift-brave/releases/download/binary-02c318768733/BraveAdblockCore.xcframework.zip",
+                    checksum: "c767bc13b469f8b53df7f90cfd309e6ef8437c9e4a93f32cf2ee0c1eb9e978f8"
+                ),
         .target(
             name: "BraveAdblock",
             dependencies: ["BraveAdblockCore"],
