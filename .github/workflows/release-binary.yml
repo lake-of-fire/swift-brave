@@ -139,7 +139,7 @@ jobs:
               '            name: "BraveAdblockCore",\n'
               f'            url: "{url}",\n'
               f'            checksum: "{checksum}"\n'
-              '        )'
+              '        ),'
           )
 
           lines = text.splitlines(keepends=True)
