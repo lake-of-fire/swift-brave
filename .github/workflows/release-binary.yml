@@ -29,6 +29,9 @@ jobs:
     steps:
       - name: Checkout swift-brave
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SWIFT_BRAVE_TOKEN || github.token }}
 
       - name: Checkout brave-core
         uses: actions/checkout@v4
@@ -123,8 +126,6 @@ jobs:
       - name: Update Package.swift for binary target
         run: |
           set -euo pipefail
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.tag.outputs.tag }}/BraveAdblockCore.xcframework.zip"
-          checksum="${{ steps.checksum.outputs.checksum }}"
           python3 - <<'PY'
           import re
           from pathlib import Path
@@ -153,8 +154,10 @@ jobs:
 
           if pattern_url.search(text):
               text = pattern_url.sub(replacement, text, count=1)
-          else:
+          elif pattern_path.search(text):
               text = pattern_path.sub(replacement, text, count=1)
+          else:
+              raise SystemExit("Could not find BraveAdblockCore binaryTarget in Package.swift")
 
           package_path.write_text(text)
           PY
