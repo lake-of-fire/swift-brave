@@ -5,6 +5,7 @@ let package = Package(
     name: "SwiftBrave",
     platforms: [
         .iOS(.v15),
+        .macCatalyst(.v15),
         .macOS(.v14)
     ],
     products: [
@@ -21,7 +22,9 @@ let package = Package(
                 ),
         .target(
             name: "BraveAdblock",
-            dependencies: ["BraveAdblockCore"],
+            dependencies: [
+                "BraveAdblockCore",
+            ],
             linkerSettings: [
                 .linkedFramework("Foundation"),
                 .linkedLibrary("c++")
