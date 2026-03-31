@@ -12,6 +12,10 @@ let package = Package(
         .library(
             name: "BraveAdblock",
             targets: ["BraveAdblock"]
+        ),
+        .library(
+            name: "BravePlaylist",
+            targets: ["BravePlaylist"]
         )
     ],
     targets: [
@@ -30,9 +34,19 @@ let package = Package(
                 .linkedLibrary("c++")
             ]
         ),
+        .target(
+            name: "BravePlaylist",
+            resources: [
+                .process("Resources")
+            ]
+        ),
         .testTarget(
             name: "BraveAdblockTests",
             dependencies: ["BraveAdblock"]
+        ),
+        .testTarget(
+            name: "BravePlaylistTests",
+            dependencies: ["BravePlaylist"]
         )
     ]
 )
