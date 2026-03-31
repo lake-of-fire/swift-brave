@@ -39,6 +39,23 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertTrue(info.isHTTPSource)
     }
 
+    func testPlaylistInfoTreatsM3U8AsHLSContainer() {
+        let info = PlaylistInfo(
+            name: "Stream",
+            src: "https://cdn.example.com/master.m3u8",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Example Page",
+            mimeType: "application/x-mpegURL",
+            duration: 12.5,
+            detected: true,
+            tagId: "tag-1",
+            isInvisible: false
+        )
+
+        XCTAssertEqual(info.containerKind, .hls)
+        XCTAssertEqual(info.kind, .unknown)
+    }
+
     func testMessageDecoderRejectsWrongSecurityToken() {
         let body: [String: Any] = [
             "securityToken": "wrong",
@@ -68,6 +85,99 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertTrue(scripts.detectorSource.contains("mediaCurrentTimeFromTag_namespace"))
         XCTAssertTrue(scripts.firefoxShimSource.contains("window.__firefox__"))
         XCTAssertTrue(scripts.mediaSourceOverrideSource.contains("delete window.MediaSource;"))
+    }
+
+    func testPlaylistWebScriptsBuildExpectedUserScripts() throws {
+        let scriptSet = try PlaylistWebScripts.make(
+            messageHandlerName: "playlistHandler",
+            allowedDomains: ["youtube.com"],
+            configuration: PlaylistScriptConfiguration(
+                messageHandlerName: "playlistHandler",
+                securityToken: "security-token",
+                namespaceToken: "namespace"
+            )
+        )
+
+        XCTAssertEqual(scriptSet.messageHandlerName, "playlistHandler")
+        XCTAssertEqual(scriptSet.userScripts.count, 3)
+        XCTAssertEqual(scriptSet.userScripts.first?.allowedDomains, ["youtube.com"])
+        XCTAssertTrue(scriptSet.userScripts[2].source.contains("playlistHandler"))
+        XCTAssertTrue(scriptSet.userScripts[2].source.contains("security-token"))
+        XCTAssertEqual(
+            scriptSet.processDocumentLoadJavaScript,
+            "window.__firefox__.playlistProcessDocumentLoad_namespace()"
+        )
+    }
+
+    func testPlaylistWebMessageDecoderUsesSecurityToken() throws {
+        let scriptSet = try PlaylistWebScripts.make(
+            messageHandlerName: "playlistHandler",
+            configuration: PlaylistScriptConfiguration(
+                messageHandlerName: "playlistHandler",
+                securityToken: "expected-token",
+                namespaceToken: "namespace"
+            )
+        )
+
+        let body: [String: Any] = [
+            "securityToken": "expected-token",
+            "state": "interactive",
+        ]
+
+        let decoded = PlaylistWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
+        XCTAssertEqual(decoded, .readyState(.init(state: "interactive")))
+    }
+
+    func testPlaylistCandidateSelectorPrefersVisibleDirectAudio() {
+        let invisibleVideo = PlaylistInfo(
+            name: "Video",
+            src: "https://example.com/video.mp4",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Watch",
+            mimeType: "video/mp4",
+            duration: 100,
+            detected: true,
+            tagId: "video",
+            isInvisible: true
+        )
+        let visibleAudio = PlaylistInfo(
+            name: "Audio",
+            src: "https://example.com/audio.m4a",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Watch",
+            mimeType: "audio/mp4",
+            duration: 30,
+            detected: true,
+            tagId: "audio",
+            isInvisible: false
+        )
+
+        let preferred = PlaylistCandidateSelector.preferredCandidate(
+            from: [invisibleVideo, visibleAudio]
+        )
+
+        XCTAssertEqual(preferred?.tagId, "audio")
+    }
+
+    func testPlaylistRequestContextBuilderIncludesCookieRefererAndUserAgent() {
+        let cookie = HTTPCookie(properties: [
+            .domain: "example.com",
+            .path: "/",
+            .name: "session",
+            .value: "abc123",
+            .secure: "FALSE",
+            .expires: Date().addingTimeInterval(60),
+        ])!
+
+        let context = PlaylistRequestContextBuilder.make(
+            userAgent: "Manabi",
+            referer: URL(string: "https://example.com/watch")!,
+            cookies: [cookie]
+        )
+
+        XCTAssertEqual(context.headers["User-Agent"], "Manabi")
+        XCTAssertEqual(context.headers["Referer"], "https://example.com/watch")
+        XCTAssertEqual(context.headers["Cookie"], "session=abc123")
     }
 
     func testMediaStreamerResolvesDirectMedia() async throws {

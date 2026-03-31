@@ -6,6 +6,12 @@ public enum PlaylistMediaKind: String, Codable, CaseIterable, Sendable {
     case unknown
 }
 
+public enum PlaylistContainerKind: String, Codable, CaseIterable, Sendable {
+    case hls
+    case file
+    case unknown
+}
+
 public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
     public var name: String
     public var src: String
@@ -29,20 +35,48 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         URL(string: pageSrc)
     }
 
+    public var normalizedMimeType: String? {
+        let trimmed = mimeType
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    public var containerKind: PlaylistContainerKind {
+        if Self.hlsMimeTypes.contains(normalizedMimeType ?? "")
+            || sourceURL?.pathExtension.lowercased() == "m3u8" {
+            return .hls
+        }
+
+        switch sourceURL?.pathExtension.lowercased() {
+        case "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "mp4", "m4v", "mov", "webm":
+            return .file
+        default:
+            return normalizedMimeType == nil ? .unknown : .file
+        }
+    }
+
     public var kind: PlaylistMediaKind {
-        let normalizedMimeType = mimeType.lowercased()
+        let normalizedMimeType = self.normalizedMimeType ?? ""
         if normalizedMimeType.hasPrefix("audio/") || normalizedMimeType == "audio" {
             return .audio
         }
         if normalizedMimeType.hasPrefix("video/") || normalizedMimeType == "video" {
             return .video
         }
+        if Self.hlsMimeTypes.contains(normalizedMimeType) {
+            return .unknown
+        }
 
         switch sourceURL?.pathExtension.lowercased() {
         case "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus":
             return .audio
-        case "mp4", "m4v", "mov", "m3u8", "webm":
+        case "mp4", "m4v", "mov", "webm":
             return .video
+        case "m3u8":
+            return .unknown
         default:
             return .unknown
         }
@@ -146,4 +180,9 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         case tagId
         case isInvisible = "invisible"
     }
+
+    private static let hlsMimeTypes: Set<String> = [
+        "application/vnd.apple.mpegurl",
+        "application/x-mpegurl",
+    ]
 }
