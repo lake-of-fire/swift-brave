@@ -1,39 +1,10 @@
 import Foundation
-
-public enum PlaylistUserScriptInjectionTime: String, Codable, CaseIterable, Sendable {
-    case atDocumentStart
-    case atDocumentEnd
-}
-
-public enum PlaylistUserScriptContentWorld: String, Codable, CaseIterable, Sendable {
-    case page
-}
-
-public struct PlaylistUserScript: Hashable, Sendable {
-    public let source: String
-    public let injectionTime: PlaylistUserScriptInjectionTime
-    public let isForMainFrameOnly: Bool
-    public let contentWorld: PlaylistUserScriptContentWorld
-    public let allowedDomains: Set<String>
-
-    public init(
-        source: String,
-        injectionTime: PlaylistUserScriptInjectionTime,
-        isForMainFrameOnly: Bool,
-        contentWorld: PlaylistUserScriptContentWorld = .page,
-        allowedDomains: Set<String> = []
-    ) {
-        self.source = source
-        self.injectionTime = injectionTime
-        self.isForMainFrameOnly = isForMainFrameOnly
-        self.contentWorld = contentWorld
-        self.allowedDomains = allowedDomains
-    }
-}
+import WebKit
+import SwiftUIWebView
 
 public struct PlaylistWebScriptSet: Sendable {
     public let playlistScripts: PlaylistBuiltScriptSet
-    public let userScripts: [PlaylistUserScript]
+    public let userScripts: [WebViewUserScript]
 
     public var messageHandlerName: String {
         playlistScripts.configuration.messageHandlerName
@@ -57,22 +28,25 @@ public enum PlaylistWebScripts {
         let configuration = configuration ?? PlaylistScriptConfiguration(messageHandlerName: messageHandlerName)
         let playlistScripts = try PlaylistScriptEngine.makeScriptSet(configuration: configuration)
         let userScripts = [
-            PlaylistUserScript(
+            WebViewUserScript(
                 source: playlistScripts.firefoxShimSource,
                 injectionTime: .atDocumentStart,
-                isForMainFrameOnly: false,
+                forMainFrameOnly: false,
+                in: .page,
                 allowedDomains: allowedDomains
             ),
-            PlaylistUserScript(
+            WebViewUserScript(
                 source: playlistScripts.mediaSourceOverrideSource,
                 injectionTime: .atDocumentStart,
-                isForMainFrameOnly: false,
+                forMainFrameOnly: false,
+                in: .page,
                 allowedDomains: allowedDomains
             ),
-            PlaylistUserScript(
+            WebViewUserScript(
                 source: playlistScripts.detectorSource,
                 injectionTime: .atDocumentStart,
-                isForMainFrameOnly: false,
+                forMainFrameOnly: false,
+                in: .page,
                 allowedDomains: allowedDomains
             ),
         ]
@@ -85,6 +59,13 @@ public enum PlaylistWebScripts {
 }
 
 public enum PlaylistWebMessageDecoder {
+    public static func decode(
+        message: WebViewMessage,
+        scriptSet: PlaylistWebScriptSet
+    ) -> PlaylistScriptMessage? {
+        decode(body: message.body, scriptSet: scriptSet)
+    }
+
     public static func decode(
         body: Any,
         scriptSet: PlaylistWebScriptSet
@@ -170,10 +151,47 @@ public enum PlaylistRequestContextBuilder {
         )
     }
 
+    @MainActor
+    public static func make(
+        webView: WKWebView,
+        referer: URL? = nil
+    ) async -> PlaylistMediaRequestContext {
+        let cookies = await cookies(from: webView.configuration.websiteDataStore.httpCookieStore)
+        let userAgent = await resolveUserAgent(for: webView)
+        return make(
+            userAgent: userAgent,
+            referer: referer ?? webView.url,
+            cookies: cookies
+        )
+    }
+
     public static func cookieHeader(for cookies: [HTTPCookie]) -> String? {
         guard !cookies.isEmpty else {
             return nil
         }
         return cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+    }
+
+    @MainActor
+    private static func resolveUserAgent(for webView: WKWebView) async -> String? {
+        if let customUserAgent = webView.customUserAgent,
+           !customUserAgent.isEmpty {
+            return customUserAgent
+        }
+
+        return await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript("navigator.userAgent") { value, _ in
+                continuation.resume(returning: value as? String)
+            }
+        }
+    }
+
+    @MainActor
+    private static func cookies(from store: WKHTTPCookieStore) async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            store.getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
+        }
     }
 }

@@ -18,6 +18,9 @@ let package = Package(
             targets: ["BravePlaylist"]
         )
     ],
+    dependencies: [
+        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main")
+    ],
     targets: [
         .binaryTarget(
                     name: "BraveAdblockCore",
@@ -36,6 +39,9 @@ let package = Package(
         ),
         .target(
             name: "BravePlaylist",
+            dependencies: [
+                .product(name: "SwiftUIWebView", package: "swiftui-webview")
+            ],
             resources: [
                 .process("Resources")
             ]
