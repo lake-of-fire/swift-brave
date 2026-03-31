@@ -140,6 +140,7 @@ public final class PlaylistMediaStreamer {
         }
 
         let loader = webLoaderFactory.makeWebLoader()
+        defer { loader.stop() }
         guard let fallbackItem = await loader.load(url: pageURL),
               let resolved = await resolveDirectMedia(fallbackItem, requestContext: requestContext, method: .fallback)
         else {

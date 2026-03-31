@@ -21,6 +21,24 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertFalse(info.isInvisible)
     }
 
+    func testPlaylistInfoNormalizesProtocolRelativeURL() {
+        let info = PlaylistInfo(
+            name: "Example",
+            src: "//cdn.example.com/audio.mp3",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Example Page",
+            mimeType: "audio/mpeg",
+            duration: 12.5,
+            detected: true,
+            tagId: "tag-1",
+            isInvisible: false
+        )
+
+        XCTAssertEqual(info.src, "https://cdn.example.com/audio.mp3")
+        XCTAssertEqual(info.kind, .audio)
+        XCTAssertTrue(info.isHTTPSource)
+    }
+
     func testMessageDecoderRejectsWrongSecurityToken() {
         let body: [String: Any] = [
             "securityToken": "wrong",
@@ -54,6 +72,9 @@ final class BravePlaylistTests: XCTestCase {
 
     func testMediaStreamerResolvesDirectMedia() async throws {
         URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Manabi")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Referer"), "https://example.com/watch/1")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "session=abc123")
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
                 statusCode: 206,
@@ -76,10 +97,20 @@ final class BravePlaylistTests: XCTestCase {
             isInvisible: false
         )
 
-        let resolved = try await streamer.resolveMedia(item)
+        let resolved = try await streamer.resolveMedia(
+            item,
+            requestContext: PlaylistMediaRequestContext(
+                userAgent: "Manabi",
+                referer: URL(string: "https://example.com/watch/1"),
+                cookieHeader: "session=abc123"
+            )
+        )
         XCTAssertEqual(resolved.url.absoluteString, item.src)
         XCTAssertEqual(resolved.mimeType, "audio/mp4")
         XCTAssertEqual(resolved.resolutionMethod, .direct)
+        XCTAssertEqual(resolved.requestHeaders["User-Agent"], "Manabi")
+        XCTAssertEqual(resolved.requestHeaders["Referer"], "https://example.com/watch/1")
+        XCTAssertEqual(resolved.requestHeaders["Cookie"], "session=abc123")
     }
 
     func testMediaStreamerFallsBackWhenPrimaryURLIsBlob() async throws {
@@ -127,6 +158,51 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(resolved.resolutionMethod, .fallback)
     }
 
+    func testMediaStreamerStopsFallbackLoaderAfterResolution() async throws {
+        let fallbackItem = PlaylistInfo(
+            name: "Fallback",
+            src: "https://media.example.com/video.mp4",
+            pageSrc: "https://example.com/watch/1",
+            pageTitle: "Fallback",
+            mimeType: "video/mp4",
+            duration: 15,
+            detected: true,
+            tagId: "fallback-1",
+            isInvisible: false
+        )
+
+        URLProtocolStub.handler = { request in
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 206,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "video/mp4"]
+            )!
+            return (response, Data())
+        }
+
+        let factory = MockLoaderFactory(item: fallbackItem)
+        let streamer = PlaylistMediaStreamer(
+            urlSession: makeSession(),
+            webLoaderFactory: factory
+        )
+
+        let item = PlaylistInfo(
+            name: "Blob",
+            src: "blob:https://example.com/123",
+            pageSrc: "https://example.com/watch/1",
+            pageTitle: "Blob",
+            mimeType: "",
+            duration: 15,
+            detected: true,
+            tagId: "blob-1",
+            isInvisible: false
+        )
+
+        _ = try await streamer.resolveMedia(item)
+        XCTAssertEqual(factory.loader.stopCallCount, 1)
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolStub.self]
@@ -135,19 +211,20 @@ final class BravePlaylistTests: XCTestCase {
 }
 
 private final class MockLoaderFactory: PlaylistWebLoaderFactory {
-    private let item: PlaylistInfo
+    let loader: MockWebLoader
 
     init(item: PlaylistInfo) {
-        self.item = item
+        self.loader = MockWebLoader(item: item)
     }
 
     func makeWebLoader() -> any PlaylistWebLoader {
-        MockWebLoader(item: item)
+        loader
     }
 }
 
 private final class MockWebLoader: PlaylistWebLoader {
     private let item: PlaylistInfo
+    private(set) var stopCallCount = 0
 
     init(item: PlaylistInfo) {
         self.item = item
@@ -157,7 +234,9 @@ private final class MockWebLoader: PlaylistWebLoader {
         item
     }
 
-    func stop() {}
+    func stop() {
+        stopCallCount += 1
+    }
 }
 
 private final class URLProtocolStub: URLProtocol {
