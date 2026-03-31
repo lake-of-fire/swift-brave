@@ -3,6 +3,10 @@ import Foundation
 public struct PlaylistReadyState: Codable, Hashable, Sendable {
     public let state: String
 
+    public init(state: String) {
+        self.state = state
+    }
+
     public var isCancellation: Bool {
         state == "cancel"
     }

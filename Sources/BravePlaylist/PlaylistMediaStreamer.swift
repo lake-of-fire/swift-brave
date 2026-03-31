@@ -43,6 +43,20 @@ public struct PlaylistResolvedMedia: Hashable, Sendable {
     public let mimeType: String?
     public let requestHeaders: [String: String]
     public let resolutionMethod: PlaylistMediaResolutionMethod
+
+    public init(
+        playlistInfo: PlaylistInfo,
+        url: URL,
+        mimeType: String?,
+        requestHeaders: [String: String] = [:],
+        resolutionMethod: PlaylistMediaResolutionMethod
+    ) {
+        self.playlistInfo = playlistInfo
+        self.url = url
+        self.mimeType = mimeType
+        self.requestHeaders = requestHeaders
+        self.resolutionMethod = resolutionMethod
+    }
 }
 
 public final class PlaylistMediaStreamer {
