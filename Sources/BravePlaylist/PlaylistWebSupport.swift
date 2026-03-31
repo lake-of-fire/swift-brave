@@ -82,8 +82,20 @@ public enum PlaylistCandidateSelector {
         from candidates: [PlaylistInfo],
         preferringAudio: Bool = true
     ) -> PlaylistInfo? {
-        candidates.max { lhs, rhs in
+        collapsedCandidates(from: candidates).max { lhs, rhs in
             compare(lhs, rhs, preferringAudio: preferringAudio) == .orderedAscending
+        }
+    }
+
+    private static func collapsedCandidates(from candidates: [PlaylistInfo]) -> [PlaylistInfo] {
+        Dictionary(grouping: candidates) { candidate in
+            candidate.tagId.isEmpty ? UUID().uuidString : candidate.tagId
+        }
+        .values
+        .compactMap { group in
+            group.max { lhs, rhs in
+                compareRefreshedCandidates(lhs, rhs) == .orderedAscending
+            }
         }
     }
 
@@ -97,6 +109,12 @@ public enum PlaylistCandidateSelector {
         if lhsScore != rhsScore {
             return lhsScore < rhsScore ? .orderedAscending : .orderedDescending
         }
+        if lhs.playbackKind != rhs.playbackKind {
+            return playbackPriority(lhs.playbackKind, preferringAudio: preferringAudio)
+                < playbackPriority(rhs.playbackKind, preferringAudio: preferringAudio)
+                ? .orderedAscending
+                : .orderedDescending
+        }
         if lhs.duration != rhs.duration {
             return lhs.duration < rhs.duration ? .orderedAscending : .orderedDescending
         }
@@ -107,6 +125,9 @@ public enum PlaylistCandidateSelector {
         var score = 0
         if !candidate.isInvisible {
             score += 8
+        }
+        if !candidate.isLikelyAdvertisement {
+            score += 10
         }
         if candidate.isHTTPSource {
             score += 8
@@ -123,18 +144,75 @@ public enum PlaylistCandidateSelector {
             score += 1
         }
         if preferringAudio {
-            switch candidate.kind {
-            case .audio:
+            switch candidate.playbackKind {
+            case .audioOnly:
                 score += 6
             case .video:
                 score += 3
             case .unknown:
                 break
             }
-        } else if candidate.kind == .video {
+        } else if candidate.playbackKind == .video {
             score += 6
         }
         return score
+    }
+
+    private static func compareRefreshedCandidates(
+        _ lhs: PlaylistInfo,
+        _ rhs: PlaylistInfo
+    ) -> ComparisonResult {
+        let lhsScore = refreshScore(lhs)
+        let rhsScore = refreshScore(rhs)
+        if lhsScore != rhsScore {
+            return lhsScore < rhsScore ? .orderedAscending : .orderedDescending
+        }
+        if lhs.duration != rhs.duration {
+            return lhs.duration < rhs.duration ? .orderedAscending : .orderedDescending
+        }
+        return lhs.src.localizedCaseInsensitiveCompare(rhs.src)
+    }
+
+    private static func refreshScore(_ candidate: PlaylistInfo) -> Int {
+        var score = 0
+        if candidate.isHTTPSource {
+            score += 8
+        }
+        if !candidate.isBlobSource && !candidate.isDataSource {
+            score += 4
+        }
+        if candidate.normalizedMimeType != nil {
+            score += 2
+        }
+        if candidate.duration > 0 {
+            score += 1
+        }
+        return score
+    }
+
+    private static func playbackPriority(
+        _ playbackKind: PlaylistPlaybackKind,
+        preferringAudio: Bool
+    ) -> Int {
+        if preferringAudio {
+            switch playbackKind {
+            case .audioOnly:
+                return 3
+            case .video:
+                return 2
+            case .unknown:
+                return 1
+            }
+        }
+
+        switch playbackKind {
+        case .video:
+            return 3
+        case .audioOnly:
+            return 2
+        case .unknown:
+            return 1
+        }
     }
 }
 

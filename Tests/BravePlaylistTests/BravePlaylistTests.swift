@@ -56,6 +56,23 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(info.kind, .unknown)
     }
 
+    func testPlaylistInfoDerivesAudioOnlyPlaybackKindForHLSAudioStream() {
+        let info = PlaylistInfo(
+            name: "Podcast audio stream",
+            src: "https://cdn.example.com/audio/master.m3u8",
+            pageSrc: "https://example.com/listen",
+            pageTitle: "Podcast episode",
+            mimeType: "application/vnd.apple.mpegurl",
+            duration: 600,
+            detected: true,
+            tagId: "audio-hls",
+            isInvisible: false
+        )
+
+        XCTAssertEqual(info.playbackKind, .audioOnly)
+        XCTAssertTrue(info.isLikelyAudioOnly)
+    }
+
     func testMessageDecoderRejectsWrongSecurityToken() {
         let body: [String: Any] = [
             "securityToken": "wrong",
@@ -159,6 +176,100 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(preferred?.tagId, "audio")
     }
 
+    func testPlaylistCandidateSelectorPrefersAudioOnlyHLSOverVideoHLS() {
+        let audioStream = PlaylistInfo(
+            name: "Audio stream",
+            src: "https://example.com/audio/master.m3u8",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Episode audio",
+            mimeType: "application/vnd.apple.mpegurl",
+            duration: 1800,
+            detected: true,
+            tagId: "audio-hls",
+            isInvisible: false
+        )
+        let videoStream = PlaylistInfo(
+            name: "Video stream",
+            src: "https://example.com/video/master.m3u8",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Episode video",
+            mimeType: "application/vnd.apple.mpegurl",
+            duration: 1800,
+            detected: true,
+            tagId: "video-hls",
+            isInvisible: false
+        )
+
+        let preferred = PlaylistCandidateSelector.preferredCandidate(
+            from: [videoStream, audioStream]
+        )
+
+        XCTAssertEqual(preferred?.tagId, "audio-hls")
+    }
+
+    func testPlaylistCandidateSelectorPrefersRefreshedDirectURLForSameTag() {
+        let staleBlob = PlaylistInfo(
+            name: "Episode",
+            src: "blob:https://example.com/123",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Episode",
+            mimeType: "",
+            duration: 1800,
+            detected: true,
+            tagId: "episode-player",
+            isInvisible: false
+        )
+        let refreshedDirect = PlaylistInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Episode",
+            mimeType: "audio/mp4",
+            duration: 1800,
+            detected: true,
+            tagId: "episode-player",
+            isInvisible: false
+        )
+
+        let preferred = PlaylistCandidateSelector.preferredCandidate(
+            from: [staleBlob, refreshedDirect]
+        )
+
+        XCTAssertEqual(preferred?.src, refreshedDirect.src)
+    }
+
+    func testPlaylistCandidateSelectorAvoidsLikelyAdvertisementCandidates() {
+        let advertisement = PlaylistInfo(
+            name: "Pre-roll ad",
+            src: "https://ads.doubleclick.net/preroll.mp4",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Sponsored preroll",
+            mimeType: "video/mp4",
+            duration: 15,
+            detected: true,
+            tagId: "ad-player",
+            isInvisible: false
+        )
+        let content = PlaylistInfo(
+            name: "Main episode",
+            src: "https://cdn.example.com/main.mp4",
+            pageSrc: "https://example.com/watch",
+            pageTitle: "Episode",
+            mimeType: "video/mp4",
+            duration: 1800,
+            detected: true,
+            tagId: "main-player",
+            isInvisible: false
+        )
+
+        let preferred = PlaylistCandidateSelector.preferredCandidate(
+            from: [advertisement, content],
+            preferringAudio: false
+        )
+
+        XCTAssertEqual(preferred?.tagId, "main-player")
+    }
+
     func testPlaylistRequestContextBuilderIncludesCookieRefererAndUserAgent() {
         let cookie = HTTPCookie(properties: [
             .domain: "example.com",
@@ -182,12 +293,14 @@ final class BravePlaylistTests: XCTestCase {
 
     func testMediaStreamerResolvesDirectMedia() async throws {
         URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.httpMethod, "HEAD")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Range"))
             XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Manabi")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Referer"), "https://example.com/watch/1")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "session=abc123")
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
-                statusCode: 206,
+                statusCode: 200,
                 httpVersion: nil,
                 headerFields: ["Content-Type": "audio/mp4; charset=utf-8"]
             )!
@@ -223,6 +336,53 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(resolved.requestHeaders["Cookie"], "session=abc123")
     }
 
+    func testMediaStreamerFallsBackToRangeGetWhenHeadProbeDoesNotReturnMimeType() async throws {
+        let lock = NSLock()
+        var methods: [String] = []
+
+        URLProtocolStub.handler = { request in
+            lock.lock()
+            methods.append(request.httpMethod ?? "GET")
+            lock.unlock()
+
+            let response: HTTPURLResponse
+            if request.httpMethod == "HEAD" {
+                response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 405,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            } else {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=0-1")
+                response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 206,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "audio/mp4"]
+                )!
+            }
+            return (response, Data())
+        }
+
+        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
+        let item = PlaylistInfo(
+            name: "Audio",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch/1",
+            pageTitle: "Audio",
+            mimeType: "",
+            duration: 10,
+            detected: true,
+            tagId: "audio-1",
+            isInvisible: false
+        )
+
+        let resolved = try await streamer.resolveMedia(item)
+        XCTAssertEqual(resolved.mimeType, "audio/mp4")
+        XCTAssertEqual(methods, ["HEAD", "GET"])
+    }
+
     func testMediaStreamerFallsBackWhenPrimaryURLIsBlob() async throws {
         let fallbackItem = PlaylistInfo(
             name: "Fallback",
@@ -239,7 +399,7 @@ final class BravePlaylistTests: XCTestCase {
         URLProtocolStub.handler = { request in
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
-                statusCode: 206,
+                statusCode: 200,
                 httpVersion: nil,
                 headerFields: ["Content-Type": "video/mp4"]
             )!
@@ -284,7 +444,7 @@ final class BravePlaylistTests: XCTestCase {
         URLProtocolStub.handler = { request in
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
-                statusCode: 206,
+                statusCode: 200,
                 httpVersion: nil,
                 headerFields: ["Content-Type": "video/mp4"]
             )!

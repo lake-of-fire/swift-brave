@@ -98,35 +98,27 @@ public final class PlaylistMediaStreamer {
             return nil
         }
 
-        var request = URLRequest(
-            url: url,
-            cachePolicy: .reloadIgnoringLocalCacheData,
-            timeoutInterval: 10
-        )
-        request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Playback-Session-Id")
+        let probeRequests = [
+            makeProbeRequest(
+                url: url,
+                method: "HEAD",
+                requestContext: requestContext
+            ),
+            makeProbeRequest(
+                url: url,
+                method: "GET",
+                requestContext: requestContext,
+                range: "bytes=0-1"
+            ),
+        ]
 
-        for (name, value) in requestContext.headers {
-            request.setValue(value, forHTTPHeaderField: name)
+        for request in probeRequests {
+            if let mimeType = await probeMimeType(for: request, using: session) {
+                return mimeType
+            }
         }
 
-        do {
-            let (_, response) = try await session.data(for: request)
-            guard let response = response as? HTTPURLResponse else {
-                return nil
-            }
-            guard response.statusCode == 302 || (200...299).contains(response.statusCode) else {
-                return nil
-            }
-
-            if let contentType = response.value(forHTTPHeaderField: "Content-Type") {
-                return normalizedMimeType(contentType)
-            }
-
-            return nil
-        } catch {
-            return nil
-        }
+        return nil
     }
 
     private func resolveViaFallback(
@@ -187,5 +179,45 @@ public final class PlaylistMediaStreamer {
             .first?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private static func makeProbeRequest(
+        url: URL,
+        method: String,
+        requestContext: PlaylistMediaRequestContext,
+        range: String? = nil
+    ) -> URLRequest {
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 10
+        )
+        request.httpMethod = method
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Playback-Session-Id")
+        if let range {
+            request.setValue(range, forHTTPHeaderField: "Range")
+        }
+        for (name, value) in requestContext.headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        return request
+    }
+
+    private static func probeMimeType(
+        for request: URLRequest,
+        using session: URLSession
+    ) async -> String? {
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let response = response as? HTTPURLResponse else {
+                return nil
+            }
+            guard response.statusCode == 302 || (200...299).contains(response.statusCode) else {
+                return nil
+            }
+            return normalizedMimeType(response.value(forHTTPHeaderField: "Content-Type"))
+        } catch {
+            return nil
+        }
     }
 }

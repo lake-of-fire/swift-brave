@@ -12,6 +12,12 @@ public enum PlaylistContainerKind: String, Codable, CaseIterable, Sendable {
     case unknown
 }
 
+public enum PlaylistPlaybackKind: String, Codable, CaseIterable, Sendable {
+    case audioOnly
+    case video
+    case unknown
+}
+
 public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
     public var name: String
     public var src: String
@@ -80,6 +86,45 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         default:
             return .unknown
         }
+    }
+
+    public var playbackKind: PlaylistPlaybackKind {
+        switch kind {
+        case .audio:
+            return .audioOnly
+        case .video:
+            return .video
+        case .unknown:
+            break
+        }
+
+        guard containerKind == .hls else {
+            return .unknown
+        }
+
+        let context = [name, pageTitle, src]
+            .joined(separator: " ")
+            .lowercased()
+
+        if Self.audioOnlyMarkers.contains(where: { context.contains($0) }) {
+            return .audioOnly
+        }
+        if Self.videoMarkers.contains(where: { context.contains($0) }) {
+            return .video
+        }
+
+        return .unknown
+    }
+
+    public var isLikelyAudioOnly: Bool {
+        playbackKind == .audioOnly
+    }
+
+    public var isLikelyAdvertisement: Bool {
+        let context = [name, pageTitle, src]
+            .joined(separator: " ")
+            .lowercased()
+        return Self.advertisementMarkers.contains(where: { context.contains($0) })
     }
 
     public var isBlobSource: Bool {
@@ -184,5 +229,51 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
     private static let hlsMimeTypes: Set<String> = [
         "application/vnd.apple.mpegurl",
         "application/x-mpegurl",
+    ]
+
+    private static let audioOnlyMarkers: Set<String> = [
+        "/audio/",
+        " audio ",
+        "audio-only",
+        "audio_only",
+        "podcast",
+        "music",
+        "song",
+        "radio",
+        "voice",
+    ]
+
+    private static let videoMarkers: Set<String> = [
+        "/video/",
+        " video ",
+        "video-only",
+        "video_only",
+        "watch",
+        "movie",
+        "episode",
+        "trailer",
+        "clip",
+        "livestream",
+        "live stream",
+    ]
+
+    private static let advertisementMarkers: Set<String> = [
+        "doubleclick",
+        "googlesyndication",
+        "googletagmanager",
+        "googleads",
+        "adservice",
+        "adsystem",
+        "imasdk",
+        "preroll",
+        "pre-roll",
+        "midroll",
+        "mid-roll",
+        "vast",
+        "/ads/",
+        "_ads",
+        "-ads",
+        "advertisement",
+        "sponsor",
     ]
 }
