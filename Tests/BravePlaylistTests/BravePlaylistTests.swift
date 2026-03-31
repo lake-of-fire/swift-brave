@@ -473,6 +473,58 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(factory.loader.stopCallCount, 1)
     }
 
+    func testMediaStreamerThrowsFallbackUnavailableForBlobWithoutResolver() async {
+        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
+        let item = PlaylistInfo(
+            name: "Blob",
+            src: "blob:https://example.com/123",
+            pageSrc: "https://example.com/watch/1",
+            pageTitle: "Blob",
+            mimeType: "",
+            duration: 15,
+            detected: true,
+            tagId: "blob-1",
+            isInvisible: false
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await streamer.resolveMedia(item)
+        ) { error in
+            XCTAssertEqual(error as? PlaylistMediaStreamer.PlaybackError, .fallbackUnavailable)
+        }
+    }
+
+    func testMediaStreamerThrowsCouldNotDeterminePlayableMediaWhenDirectProbeFails() async {
+        URLProtocolStub.handler = { request in
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+
+        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
+        let item = PlaylistInfo(
+            name: "Unknown",
+            src: "https://cdn.example.com/stream",
+            pageSrc: "https://example.com/watch/1",
+            pageTitle: "Unknown",
+            mimeType: "",
+            duration: 10,
+            detected: true,
+            tagId: "unknown-1",
+            isInvisible: false
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await streamer.resolveMedia(item)
+        ) { error in
+            XCTAssertEqual(error as? PlaylistMediaStreamer.PlaybackError, .couldNotDeterminePlayableMedia)
+        }
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolStub.self]
@@ -537,4 +589,18 @@ private final class URLProtocolStub: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    _ errorHandler: (Error) -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("Expected error to be thrown", file: file, line: line)
+    } catch {
+        errorHandler(error)
+    }
 }

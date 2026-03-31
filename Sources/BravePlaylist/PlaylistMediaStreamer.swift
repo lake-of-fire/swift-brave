@@ -60,8 +60,11 @@ public struct PlaylistResolvedMedia: Hashable, Sendable {
 }
 
 public final class PlaylistMediaStreamer {
-    public enum PlaybackError: Error {
-        case cannotLoadMedia
+    public enum PlaybackError: Error, Equatable {
+        case unsupportedSource
+        case couldNotDeterminePlayableMedia
+        case fallbackUnavailable
+        case fallbackDidNotResolvePlayableMedia
     }
 
     private let urlSession: URLSession
@@ -79,11 +82,23 @@ public final class PlaylistMediaStreamer {
         _ item: PlaylistInfo,
         requestContext: PlaylistMediaRequestContext = .init()
     ) async throws -> PlaylistResolvedMedia {
+        guard item.sourceURL != nil else {
+            throw PlaybackError.unsupportedSource
+        }
+
         if let resolved = await resolveDirectMedia(item, requestContext: requestContext, method: .direct) {
             return resolved
         }
 
-        return try await resolveViaFallback(item, requestContext: requestContext)
+        if item.pageURL != nil, webLoaderFactory != nil {
+            return try await resolveViaFallback(item, requestContext: requestContext)
+        }
+
+        if item.isBlobSource || item.isDataSource {
+            throw PlaybackError.fallbackUnavailable
+        }
+
+        throw PlaybackError.couldNotDeterminePlayableMedia
     }
 
     public static func getMimeType(
@@ -128,15 +143,20 @@ public final class PlaylistMediaStreamer {
         guard let pageURL = item.pageURL,
               let webLoaderFactory
         else {
-            throw PlaybackError.cannotLoadMedia
+            throw PlaybackError.fallbackUnavailable
         }
 
         let loader = webLoaderFactory.makeWebLoader()
         defer { loader.stop() }
-        guard let fallbackItem = await loader.load(url: pageURL),
-              let resolved = await resolveDirectMedia(fallbackItem, requestContext: requestContext, method: .fallback)
-        else {
-            throw PlaybackError.cannotLoadMedia
+        guard let fallbackItem = await loader.load(url: pageURL) else {
+            throw PlaybackError.fallbackUnavailable
+        }
+        guard let resolved = await resolveDirectMedia(
+            fallbackItem,
+            requestContext: requestContext,
+            method: .fallback
+        ) else {
+            throw PlaybackError.fallbackDidNotResolvePlayableMedia
         }
 
         return resolved
