@@ -525,10 +525,246 @@ final class BravePlaylistTests: XCTestCase {
         }
     }
 
+    func testOfflineStoreDownloadsStoresThumbnailAndFindsMediaByPage() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let item = PlaylistInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-1",
+            isInvisible: false
+        )
+        let resolvedMedia = PlaylistResolvedMedia(
+            playlistInfo: item,
+            url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
+            mimeType: "audio/mp4",
+            requestHeaders: ["Cookie": "session=abc123"],
+            resolutionMethod: .direct
+        )
+
+        let thumbnailData = Data("thumb".utf8)
+        let storedMedia = try await fixture.store.download(
+            resolvedMedia,
+            storageScope: .transient,
+            thumbnail: .inlineImageData(thumbnailData, fileExtension: "jpg")
+        )
+
+        XCTAssertEqual(storedMedia.storageScope, .transient)
+        XCTAssertEqual(try String(decoding: Data(contentsOf: storedMedia.localMediaURL), as: UTF8.self), "media-1")
+        XCTAssertEqual(
+            try Data(contentsOf: try XCTUnwrap(storedMedia.localThumbnailURL)),
+            thumbnailData
+        )
+
+        let byItem = try await fixture.store.storedMedia(for: item)
+        XCTAssertEqual(byItem?.id, storedMedia.id)
+
+        let byPage = try await fixture.store.storedMedia(
+            forPageURL: URL(string: "https://example.com/watch?v=1")!
+        )
+        XCTAssertEqual(byPage.map(\.id), [storedMedia.id])
+        XCTAssertEqual(fixture.downloader.downloadCallCount, 1)
+    }
+
+    func testOfflineStoreReusesExistingCandidateWithoutRedownloading() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let item = PlaylistInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-1",
+            isInvisible: false
+        )
+        let initial = PlaylistResolvedMedia(
+            playlistInfo: item,
+            url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
+            mimeType: "audio/mp4",
+            requestHeaders: [:],
+            resolutionMethod: .direct
+        )
+        let refreshed = PlaylistResolvedMedia(
+            playlistInfo: item,
+            url: URL(string: "https://cdn.example.com/audio.m4a?token=2")!,
+            mimeType: "audio/mp4",
+            requestHeaders: [:],
+            resolutionMethod: .fallback
+        )
+
+        let first = try await fixture.store.download(initial, storageScope: .transient)
+        let second = try await fixture.store.download(refreshed, storageScope: .transient)
+
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(second.resolvedMediaURL, first.resolvedMediaURL)
+        XCTAssertEqual(fixture.downloader.downloadCallCount, 1)
+    }
+
+    func testOfflineStorePromotesTransientMediaToPersistentWithoutRedownloading() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let item = PlaylistInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-1",
+            isInvisible: false
+        )
+        let resolvedMedia = PlaylistResolvedMedia(
+            playlistInfo: item,
+            url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
+            mimeType: "audio/mp4",
+            requestHeaders: [:],
+            resolutionMethod: .direct
+        )
+
+        let transient = try await fixture.store.download(resolvedMedia, storageScope: .transient)
+        let persistent = try await fixture.store.download(resolvedMedia, storageScope: .persistent)
+
+        XCTAssertEqual(transient.id, persistent.id)
+        XCTAssertEqual(persistent.storageScope, .persistent)
+        XCTAssertTrue(persistent.localMediaURL.path.contains("/persistent/"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transient.localMediaURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: persistent.localMediaURL.path))
+        XCTAssertEqual(fixture.downloader.downloadCallCount, 1)
+    }
+
+    func testOfflineStoreDeletesIndividuallyAndPurgesTransientMedia() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let persistentItem = PlaylistInfo(
+            name: "Saved Episode",
+            src: "https://cdn.example.com/saved.m4a",
+            pageSrc: "https://example.com/watch?v=saved",
+            pageTitle: "Saved Episode",
+            mimeType: "audio/mp4",
+            duration: 60,
+            detected: true,
+            tagId: "saved-1",
+            isInvisible: false
+        )
+        let transientItem = PlaylistInfo(
+            name: "Temp Episode",
+            src: "https://cdn.example.com/temp.m4a",
+            pageSrc: "https://example.com/watch?v=temp",
+            pageTitle: "Temp Episode",
+            mimeType: "audio/mp4",
+            duration: 60,
+            detected: true,
+            tagId: "temp-1",
+            isInvisible: false
+        )
+
+        let saved = try await fixture.store.download(
+            PlaylistResolvedMedia(
+                playlistInfo: persistentItem,
+                url: URL(string: persistentItem.src)!,
+                mimeType: "audio/mp4",
+                requestHeaders: [:],
+                resolutionMethod: .direct
+            ),
+            storageScope: .persistent
+        )
+        _ = try await fixture.store.download(
+            PlaylistResolvedMedia(
+                playlistInfo: transientItem,
+                url: URL(string: transientItem.src)!,
+                mimeType: "audio/mp4",
+                requestHeaders: [:],
+                resolutionMethod: .direct
+            ),
+            storageScope: .transient
+        )
+
+        try await fixture.store.deleteStoredMedia(id: saved.id)
+        let deletedMedia = try await fixture.store.storedMedia(id: saved.id)
+        XCTAssertNil(deletedMedia)
+
+        try await fixture.store.purgeTransientMedia()
+        let remainingMedia = try await fixture.store.allStoredMedia()
+        XCTAssertEqual(remainingMedia.count, 0)
+    }
+
+    func testPlaylistLibraryResolvesAndDownloadsMediaIntoStore() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        URLProtocolStub.handler = { request in
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "audio/mp4"]
+            )!
+            return (response, Data())
+        }
+
+        let library = PlaylistLibrary(
+            mediaStreamer: PlaylistMediaStreamer(urlSession: makeSession()),
+            offlineStore: fixture.store
+        )
+        let item = PlaylistInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Episode Page",
+            mimeType: "",
+            duration: 42,
+            detected: true,
+            tagId: "episode-1",
+            isInvisible: false
+        )
+
+        let storedMedia = try await library.download(
+            item,
+            storageScope: .persistent,
+            thumbnail: .none
+        )
+
+        XCTAssertEqual(storedMedia.storageScope, .persistent)
+        XCTAssertEqual(fixture.downloader.downloadCallCount, 1)
+        let pageMedia = try await library.storedMedia(
+            forPageURL: URL(string: "https://example.com/watch?v=1")!
+        )
+        XCTAssertEqual(pageMedia.count, 1)
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolStub.self]
         return URLSession(configuration: configuration)
+    }
+
+    private func makeOfflineStoreFixture() throws -> OfflineStoreFixture {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let downloader = MockArtifactDownloader()
+        let store = PlaylistOfflineMediaStore(
+            configuration: .init(
+                persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
+                transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
+                excludeFromBackup: false
+            ),
+            downloader: downloader,
+            urlSession: makeSession()
+        )
+        return OfflineStoreFixture(rootURL: rootURL, store: store, downloader: downloader)
     }
 }
 
@@ -589,6 +825,49 @@ private final class URLProtocolStub: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private struct OfflineStoreFixture {
+    let rootURL: URL
+    let store: PlaylistOfflineMediaStore
+    let downloader: MockArtifactDownloader
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+}
+
+private final class MockArtifactDownloader: PlaylistArtifactDownloading {
+    private(set) var downloadCallCount = 0
+
+    func download(
+        media: PlaylistResolvedMedia,
+        into directory: URL,
+        identifier: String,
+        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void
+    ) async throws -> PlaylistDownloadedArtifact {
+        downloadCallCount += 1
+
+        let payload = Data("media-\(downloadCallCount)".utf8)
+        let relativePath = "media.mp4"
+        let destinationURL = directory.appendingPathComponent(relativePath, isDirectory: false)
+        try payload.write(to: destinationURL, options: .atomic)
+
+        onProgress(
+            PlaylistDownloadProgress(
+                id: identifier,
+                fractionCompleted: 1,
+                bytesDownloaded: Int64(payload.count),
+                totalBytesExpected: Int64(payload.count)
+            )
+        )
+
+        return PlaylistDownloadedArtifact(
+            relativeMediaPath: relativePath,
+            mimeType: media.mimeType,
+            byteCount: Int64(payload.count)
+        )
+    }
 }
 
 private func XCTAssertThrowsErrorAsync<T>(

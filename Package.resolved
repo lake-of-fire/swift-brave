@@ -1,0 +1,24 @@
+{
+  "originHash" : "505f31fcb7da6129cf34c0de63858c10450d5875fcac6e0ab905b7037892bf58",
+  "pins" : [
+    {
+      "identity" : "lrucache",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nicklockwood/LRUCache.git",
+      "state" : {
+        "revision" : "cb5b2bd0da83ad29c0bec762d39f41c8ad0eaf3e",
+        "version" : "1.2.1"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "63bfbed01a39126550b0f1ac87ac48027697831a"
+      }
+    }
+  ],
+  "version" : 3
+}

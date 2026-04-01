@@ -41,6 +41,26 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         URL(string: pageSrc)
     }
 
+    public var pageLookupKey: String {
+        Self.pageLookupKey(for: pageSrc)
+    }
+
+    public var candidateLookupKey: String {
+        Self.candidateLookupKey(
+            pageSrc: pageSrc,
+            tagId: tagId,
+            name: name,
+            duration: duration
+        )
+    }
+
+    public var preferredDisplayName: String {
+        let candidates = [name, pageTitle]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+        return candidates.first ?? "Media"
+    }
+
     public var normalizedMimeType: String? {
         let trimmed = mimeType
             .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
@@ -212,6 +232,33 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
             return url
         }
         return src
+    }
+
+    public static func pageLookupKey(for pageSrc: String) -> String {
+        guard var components = URLComponents(string: pageSrc) else {
+            return pageSrc.split(separator: "#", maxSplits: 1).first.map(String.init) ?? pageSrc
+        }
+
+        components.fragment = nil
+        return components.string ?? pageSrc
+    }
+
+    public static func candidateLookupKey(
+        pageSrc: String,
+        tagId: String,
+        name: String,
+        duration: TimeInterval
+    ) -> String {
+        let pageKey = pageLookupKey(for: pageSrc)
+        if tagId.isEmpty == false {
+            return "\(pageKey)::\(tagId)"
+        }
+
+        let sanitizedName = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let roundedDuration = Int(duration.rounded())
+        return "\(pageKey)::\(sanitizedName)::\(roundedDuration)"
     }
 
     private enum CodingKeys: String, CodingKey {
