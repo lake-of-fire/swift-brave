@@ -1,5 +1,5 @@
 {
-  "originHash" : "505f31fcb7da6129cf34c0de63858c10450d5875fcac6e0ab905b7037892bf58",
+  "originHash" : "7c0900fcea3af60918e8a7f14b48391933e6dc7f645889175b3e9fc9f94e9e31",
   "pins" : [
     {
       "identity" : "lrucache",
@@ -17,6 +17,15 @@
       "state" : {
         "branch" : "main",
         "revision" : "63bfbed01a39126550b0f1ac87ac48027697831a"
+      }
+    },
+    {
+      "identity" : "swiftui-webview",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lake-of-fire/swiftui-webview.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "71cfcd9646384324accbbe1e3f302d62a240b3ad"
       }
     }
   ],

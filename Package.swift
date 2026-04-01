@@ -19,7 +19,7 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(path: "../swiftui-webview")
+        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main")
     ],
     targets: [
         .binaryTarget(
