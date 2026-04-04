@@ -293,6 +293,7 @@ public struct PlaylistStoredMedia: Hashable, Identifiable, Sendable {
     public let byteCount: Int64?
     public let resolutionMethod: PlaylistMediaResolutionMethod
     public let downloadedAt: Date
+    public let lastAccessedAt: Date
 
     public var pageURL: URL? {
         playlistInfo.pageURL
@@ -749,7 +750,7 @@ public actor PlaylistOfflineMediaStore {
         public var maxAge: TimeInterval?
 
         public init(
-            maxItemCount: Int? = 10,
+            maxItemCount: Int? = 3,
             maxTotalByteCount: Int64? = 2_000_000_000,
             maxAge: TimeInterval? = 7 * 24 * 60 * 60
         ) {
@@ -896,6 +897,7 @@ public actor PlaylistOfflineMediaStore {
             existingMetadata.state = .queued
             existingMetadata.updatedAt = now
             existingMetadata.downloadedAt = nil
+            existingMetadata.lastAccessedAt = nil
             existingMetadata.failureDescription = nil
             existingMetadata.mediaRelativePath = nil
             existingMetadata.thumbnailRelativePath = nil
@@ -918,6 +920,7 @@ public actor PlaylistOfflineMediaStore {
                 createdAt: existingRecord?.createdAt ?? now,
                 updatedAt: now,
                 downloadedAt: nil,
+                lastAccessedAt: nil,
                 progress: .init(id: identifier, fractionCompleted: 0, bytesDownloaded: 0, totalBytesExpected: nil),
                 failureDescription: nil,
                 mediaRelativePath: nil,
@@ -1065,10 +1068,16 @@ public actor PlaylistOfflineMediaStore {
     }
 
     public func storedMedia(for item: PlaylistInfo) throws -> PlaylistStoredMedia? {
-        try allStoredMedia()
-            .filter { $0.candidateLookupKey == item.candidateLookupKey }
-            .sorted(by: Self.preferredStoredOrdering)
-            .first
+        guard let metadata = try (
+            loadAllMetadata()
+                .filter { $0.state == .downloaded && $0.playlistInfo.candidateLookupKey == item.candidateLookupKey }
+                .sorted(by: Self.preferredStoredMetadataOrdering)
+                .first
+        )
+        else {
+            return nil
+        }
+        return try touchAndMakeStoredMedia(metadata)
     }
 
     public func storedMedia(forPageURL pageURL: URL) throws -> [PlaylistStoredMedia] {
@@ -1079,16 +1088,26 @@ public actor PlaylistOfflineMediaStore {
     }
 
     public func bestStoredMedia(forPageURL pageURL: URL) throws -> PlaylistStoredMedia? {
-        try storedMedia(forPageURL: pageURL).first
+        guard let metadata = try (
+            loadAllMetadata()
+                .filter {
+                    $0.state == .downloaded
+                        && $0.playlistInfo.pageLookupKey == PlaylistInfo.pageLookupKey(for: pageURL.absoluteString)
+                }
+                .sorted(by: Self.preferredStoredMetadataOrdering)
+                .first
+        )
+        else {
+            return nil
+        }
+        return try touchAndMakeStoredMedia(metadata)
     }
 
     public func storedMedia(id: String) throws -> PlaylistStoredMedia? {
         guard let metadata = try loadAllMetadata().first(where: { $0.id == id && $0.state == .downloaded }) else {
             return nil
         }
-        return metadata.makeStoredMedia(
-            rootDirectory: directoryURL(for: id, scope: metadata.storageScope)
-        )
+        return try touchAndMakeStoredMedia(metadata)
     }
 
     public func allStoredMedia(scope: PlaylistOfflineStorageScope? = nil) throws -> [PlaylistStoredMedia] {
@@ -1135,7 +1154,7 @@ public actor PlaylistOfflineMediaStore {
         try writeMetadata(metadata, in: destinationDirectory)
 
         if storageScope == .transient {
-            try enforceTransientStoragePolicy(excluding: [id])
+            try enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
         }
 
         guard let stored = metadata.makeStoredMedia(rootDirectory: destinationDirectory) else {
@@ -1194,7 +1213,7 @@ public actor PlaylistOfflineMediaStore {
             metadata.storageScope = .transient
             metadata.updatedAt = Date()
             try writeMetadata(metadata, in: destinationDirectory)
-            try enforceTransientStoragePolicy(excluding: [id])
+            try enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
             emit(
                 PlaylistDownloadEvent(
                     id: id,
@@ -1210,7 +1229,7 @@ public actor PlaylistOfflineMediaStore {
         metadata.updatedAt = Date()
         try writeMetadata(metadata, in: itemDirectory)
         if metadata.storageScope == .transient {
-            try enforceTransientStoragePolicy(excluding: [id])
+            try enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
         }
         emit(
             PlaylistDownloadEvent(
@@ -1276,6 +1295,11 @@ public actor PlaylistOfflineMediaStore {
         for record in transientRecords where retainedKeys.contains(record.pageLookupKey) == false {
             try deleteStoredMedia(id: record.id)
         }
+    }
+
+    public func enforceTransientStoragePolicy(exceptPageURLs pageURLs: [URL]) throws {
+        let pageLookupKeys = Set(pageURLs.map { PlaylistInfo.pageLookupKey(for: $0.absoluteString) })
+        try enforceTransientStoragePolicy(excluding: [], exceptPageLookupKeys: pageLookupKeys)
     }
 
     public func handlePageDidChange(from oldPageURL: URL?, to newPageURL: URL?) throws {
@@ -1357,7 +1381,15 @@ public actor PlaylistOfflineMediaStore {
     }
 
     public func enforceTransientStoragePolicy() throws {
-        try enforceTransientStoragePolicy(excluding: [])
+        try enforceTransientStoragePolicy(excluding: [], exceptPageLookupKeys: [])
+    }
+
+    @discardableResult
+    public func touchStoredMedia(id: String) throws -> PlaylistStoredMedia? {
+        guard let metadata = try loadAllMetadata().first(where: { $0.id == id && $0.state == .downloaded }) else {
+            return nil
+        }
+        return try touchAndMakeStoredMedia(metadata)
     }
 
     private func startDownload(
@@ -1424,6 +1456,7 @@ public actor PlaylistOfflineMediaStore {
             metadata.state = .downloaded
             metadata.updatedAt = Date()
             metadata.downloadedAt = Date()
+            metadata.lastAccessedAt = metadata.downloadedAt
             metadata.progress = PlaylistDownloadProgress(
                 id: identifier,
                 fractionCompleted: 1,
@@ -1444,7 +1477,11 @@ public actor PlaylistOfflineMediaStore {
             try writeMetadata(metadata, in: itemDirectory)
 
             if metadata.storageScope == .transient {
-                try enforceTransientStoragePolicy(excluding: [identifier])
+                let pageLookupKeys = Set(
+                    metadata.playlistInfo.pageURL.map { PlaylistInfo.pageLookupKey(for: $0.absoluteString) }.map { [$0] }
+                        ?? []
+                )
+                try enforceTransientStoragePolicy(excluding: [identifier], exceptPageLookupKeys: pageLookupKeys)
             }
 
             guard let stored = metadata.makeStoredMedia(rootDirectory: itemDirectory) else {
@@ -1605,7 +1642,10 @@ public actor PlaylistOfflineMediaStore {
         return nil
     }
 
-    private func enforceTransientStoragePolicy(excluding excludedIDs: Set<String>) throws {
+    private func enforceTransientStoragePolicy(
+        excluding excludedIDs: Set<String>,
+        exceptPageLookupKeys: Set<String>
+    ) throws {
         let policy = configuration.transientStoragePolicy
         guard policy.maxItemCount != nil || policy.maxTotalByteCount != nil || policy.maxAge != nil else {
             return
@@ -1613,30 +1653,40 @@ public actor PlaylistOfflineMediaStore {
 
         let now = Date()
         var records = try allStoredMedia(scope: .transient)
-            .sorted { $0.downloadedAt < $1.downloadedAt }
+            .sorted { $0.lastAccessedAt < $1.lastAccessedAt }
 
         if let maxAge = policy.maxAge {
-            for record in records where now.timeIntervalSince(record.downloadedAt) > maxAge {
-                if excludedIDs.contains(record.id) == false {
+            for record in records where now.timeIntervalSince(record.lastAccessedAt) > maxAge {
+                if excludedIDs.contains(record.id) == false && exceptPageLookupKeys.contains(record.pageLookupKey) == false {
                     try deleteStoredMedia(id: record.id)
                 }
             }
             records = try allStoredMedia(scope: .transient)
-                .sorted { $0.downloadedAt < $1.downloadedAt }
+                .sorted { $0.lastAccessedAt < $1.lastAccessedAt }
         }
 
         if let maxItemCount = policy.maxItemCount {
-            while records.count > maxItemCount,
-                  let record = records.first(where: { excludedIDs.contains($0.id) == false }) {
+            while records.filter({
+                excludedIDs.contains($0.id) == false && exceptPageLookupKeys.contains($0.pageLookupKey) == false
+            }).count > maxItemCount,
+                  let record = records.first(where: {
+                      excludedIDs.contains($0.id) == false && exceptPageLookupKeys.contains($0.pageLookupKey) == false
+                  }) {
                 try deleteStoredMedia(id: record.id)
                 records.removeAll(where: { $0.id == record.id })
             }
         }
 
         if let maxTotalByteCount = policy.maxTotalByteCount {
-            var totalBytes = records.reduce(Int64(0)) { $0 + ($1.byteCount ?? 0) }
+            var totalBytes = records
+                .filter {
+                    excludedIDs.contains($0.id) == false && exceptPageLookupKeys.contains($0.pageLookupKey) == false
+                }
+                .reduce(Int64(0)) { $0 + ($1.byteCount ?? 0) }
             while totalBytes > maxTotalByteCount,
-                  let record = records.first(where: { excludedIDs.contains($0.id) == false }) {
+                  let record = records.first(where: {
+                      excludedIDs.contains($0.id) == false && exceptPageLookupKeys.contains($0.pageLookupKey) == false
+                  }) {
                 try deleteStoredMedia(id: record.id)
                 records.removeAll(where: { $0.id == record.id })
                 totalBytes -= record.byteCount ?? 0
@@ -1760,7 +1810,28 @@ public actor PlaylistOfflineMediaStore {
         if lhs.storageScope != rhs.storageScope {
             return lhs.storageScope == .persistent
         }
-        return lhs.downloadedAt > rhs.downloadedAt
+        return lhs.lastAccessedAt > rhs.lastAccessedAt
+    }
+
+    private static func preferredStoredMetadataOrdering(
+        _ lhs: PlaylistStoredMediaMetadata,
+        _ rhs: PlaylistStoredMediaMetadata
+    ) -> Bool {
+        if lhs.storageScope != rhs.storageScope {
+            return lhs.storageScope == .persistent
+        }
+        return (lhs.lastAccessedAt ?? lhs.downloadedAt ?? .distantPast)
+            > (rhs.lastAccessedAt ?? rhs.downloadedAt ?? .distantPast)
+    }
+
+    private func touchAndMakeStoredMedia(_ metadata: PlaylistStoredMediaMetadata) throws -> PlaylistStoredMedia? {
+        var touchedMetadata = metadata
+        let rootDirectory = directoryURL(for: metadata.id, scope: metadata.storageScope)
+        let now = Date()
+        touchedMetadata.lastAccessedAt = now
+        touchedMetadata.updatedAt = now
+        try writeMetadata(touchedMetadata, in: rootDirectory)
+        return touchedMetadata.makeStoredMedia(rootDirectory: rootDirectory)
     }
 
     private static func preferredDownloadOrdering(_ lhs: PlaylistDownloadRecord, _ rhs: PlaylistDownloadRecord) -> Bool {
@@ -1808,6 +1879,7 @@ private struct PlaylistStoredMediaMetadata: Codable, Hashable, Sendable {
     var createdAt: Date
     var updatedAt: Date
     var downloadedAt: Date?
+    var lastAccessedAt: Date?
     var progress: PlaylistDownloadProgress?
     var failureDescription: String?
     var mediaRelativePath: String?
@@ -1825,6 +1897,7 @@ private struct PlaylistStoredMediaMetadata: Codable, Hashable, Sendable {
         case createdAt
         case updatedAt
         case downloadedAt
+        case lastAccessedAt
         case progress
         case failureDescription
         case mediaRelativePath
@@ -1843,6 +1916,7 @@ private struct PlaylistStoredMediaMetadata: Codable, Hashable, Sendable {
         createdAt: Date,
         updatedAt: Date,
         downloadedAt: Date?,
+        lastAccessedAt: Date?,
         progress: PlaylistDownloadProgress?,
         failureDescription: String?,
         mediaRelativePath: String?,
@@ -1859,6 +1933,7 @@ private struct PlaylistStoredMediaMetadata: Codable, Hashable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.downloadedAt = downloadedAt
+        self.lastAccessedAt = lastAccessedAt
         self.progress = progress
         self.failureDescription = failureDescription
         self.mediaRelativePath = mediaRelativePath
@@ -1880,6 +1955,9 @@ private struct PlaylistStoredMediaMetadata: Codable, Hashable, Sendable {
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         self.downloadedAt = try container.decodeIfPresent(Date.self, forKey: .downloadedAt)
+        self.lastAccessedAt =
+            try container.decodeIfPresent(Date.self, forKey: .lastAccessedAt)
+            ?? self.downloadedAt
         self.progress = try container.decodeIfPresent(PlaylistDownloadProgress.self, forKey: .progress)
         self.failureDescription = try container.decodeIfPresent(String.self, forKey: .failureDescription)
         self.mediaRelativePath = try container.decodeIfPresent(String.self, forKey: .mediaRelativePath)
@@ -1912,7 +1990,8 @@ private struct PlaylistStoredMediaMetadata: Codable, Hashable, Sendable {
             mimeType: resolvedMedia.mimeType,
             byteCount: byteCount,
             resolutionMethod: resolvedMedia.resolutionMethod,
-            downloadedAt: downloadedAt
+            downloadedAt: downloadedAt,
+            lastAccessedAt: lastAccessedAt ?? downloadedAt
         )
     }
 

@@ -162,4 +162,13 @@ public actor PlaylistLibrary {
     public func enforceTransientStoragePolicy() async throws {
         try await offlineStore.enforceTransientStoragePolicy()
     }
+
+    public func enforceTransientStoragePolicy(exceptPageURLs pageURLs: [URL]) async throws {
+        try await offlineStore.enforceTransientStoragePolicy(exceptPageURLs: pageURLs)
+    }
+
+    @discardableResult
+    public func touchStoredMedia(id: String) async throws -> PlaylistStoredMedia? {
+        try await offlineStore.touchStoredMedia(id: id)
+    }
 }

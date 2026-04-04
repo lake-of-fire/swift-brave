@@ -20,6 +20,8 @@ public struct PlaylistScriptConfiguration: Hashable, Sendable {
     public let processDocumentLoadFunctionName: String
     public let currentTimeFunctionName: String
     public let stopPlaybackFunctionName: String
+    public let telemetryAttachedName: String
+    public let telemetryHeartbeatName: String
 
     public init(
         messageHandlerName: String,
@@ -34,6 +36,8 @@ public struct PlaylistScriptConfiguration: Hashable, Sendable {
         self.processDocumentLoadFunctionName = "playlistProcessDocumentLoad_\(namespaceToken)"
         self.currentTimeFunctionName = "mediaCurrentTimeFromTag_\(namespaceToken)"
         self.stopPlaybackFunctionName = "stopMediaPlayback_\(namespaceToken)"
+        self.telemetryAttachedName = "playlistTelemetryAttached_\(namespaceToken)"
+        self.telemetryHeartbeatName = "playlistTelemetryHeartbeat_\(namespaceToken)"
     }
 }
 
@@ -65,6 +69,8 @@ public enum PlaylistScriptEngine {
                 "$<playlistProcessDocumentLoad>": configuration.processDocumentLoadFunctionName,
                 "$<mediaCurrentTimeFromTag>": configuration.currentTimeFunctionName,
                 "$<stopMediaPlayback>": configuration.stopPlaybackFunctionName,
+                "$<telemetryAttached>": configuration.telemetryAttachedName,
+                "$<telemetryHeartbeat>": configuration.telemetryHeartbeatName,
             ],
             securityToken: configuration.securityToken,
             script: detector

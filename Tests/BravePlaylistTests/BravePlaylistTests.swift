@@ -88,6 +88,50 @@ final class BravePlaylistTests: XCTestCase {
         )
     }
 
+    func testPlaybackEventDecoderNormalizesCurrentSourceAndPresentationMode() throws {
+        let body: [String: Any] = [
+            "securityToken": "expected-token",
+            "messageKind": "playback",
+            "eventName": "playing",
+            "tagId": "player-1",
+            "pageSrc": "https://example.com/watch?v=1#fragment",
+            "pageTitle": "Example Page",
+            "src": "/video/master.m3u8",
+            "currentSrc": "//cdn.example.com/video/master.m3u8#time=10",
+            "mimeType": "application/vnd.apple.mpegurl",
+            "mediaType": "video",
+            "currentTime": 12.5,
+            "duration": 120.0,
+            "paused": false,
+            "ended": false,
+            "playbackRate": 1.0,
+            "muted": false,
+            "volume": 0.75,
+            "readyState": 4,
+            "networkState": 2,
+            "presentationMode": "picture-in-picture",
+            "isInvisible": false,
+        ]
+
+        let decoded = try XCTUnwrap(
+            PlaylistScriptMessageDecoder.decode(
+                body: body,
+                expectingSecurityToken: "expected-token"
+            )
+        )
+
+        guard case .playback(let event) = decoded else {
+            return XCTFail("Expected playback event")
+        }
+
+        XCTAssertEqual(event.eventName, .playing)
+        XCTAssertEqual(event.snapshot.src, "https://example.com/video/master.m3u8")
+        XCTAssertEqual(event.snapshot.currentSrc, "https://cdn.example.com/video/master.m3u8#time=10")
+        XCTAssertEqual(event.snapshot.pageLookupKey, "https://example.com/watch?v=1")
+        XCTAssertEqual(event.snapshot.presentationMode, .pictureInPicture)
+        XCTAssertEqual(event.snapshot.mediaType, .video)
+    }
+
     func testScriptSetBuildsExpectedHandlerNames() throws {
         let configuration = PlaylistScriptConfiguration(
             messageHandlerName: "playlistHandler",
@@ -101,6 +145,8 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertTrue(scripts.detectorSource.contains("playlistHandler"))
         XCTAssertTrue(scripts.detectorSource.contains("playlistProcessDocumentLoad_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("mediaCurrentTimeFromTag_namespace"))
+        XCTAssertTrue(scripts.detectorSource.contains("playlistTelemetryAttached_namespace"))
+        XCTAssertTrue(scripts.detectorSource.contains("\"messageKind\": \"playback\""))
         XCTAssertTrue(scripts.firefoxShimSource.contains("window.__firefox__"))
         XCTAssertTrue(scripts.mediaSourceOverrideSource.contains("delete window.MediaSource;"))
     }
@@ -144,6 +190,71 @@ final class BravePlaylistTests: XCTestCase {
 
         let decoded = PlaylistWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
         XCTAssertEqual(decoded, .readyState(.init(state: "interactive")))
+    }
+
+    func testPlaylistWebMessageDecoderDecodesPlaybackEvents() throws {
+        let scriptSet = try PlaylistWebScripts.make(
+            messageHandlerName: "playlistHandler",
+            configuration: PlaylistScriptConfiguration(
+                messageHandlerName: "playlistHandler",
+                securityToken: "expected-token",
+                namespaceToken: "namespace"
+            )
+        )
+
+        let body: [String: Any] = [
+            "securityToken": "expected-token",
+            "messageKind": "playback",
+            "eventName": "heartbeat",
+            "tagId": "player-1",
+            "pageSrc": "https://example.com/watch?v=1",
+            "pageTitle": "Example Page",
+            "src": "https://cdn.example.com/audio.m4a",
+            "currentSrc": "https://cdn.example.com/audio.m4a",
+            "mimeType": "audio/mp4",
+            "mediaType": "audio",
+            "currentTime": 45.0,
+            "duration": 300.0,
+            "paused": false,
+            "ended": false,
+            "playbackRate": 1.0,
+            "muted": false,
+            "volume": 1.0,
+            "readyState": 4,
+            "networkState": 1,
+            "presentationMode": "inline",
+            "isInvisible": false,
+        ]
+
+        let decoded = PlaylistWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
+        XCTAssertEqual(
+            decoded,
+            .playback(
+                PlaylistPlaybackEvent(
+                    eventName: .heartbeat,
+                    snapshot: PlaylistPlaybackSnapshot(
+                        tagId: "player-1",
+                        pageSrc: "https://example.com/watch?v=1",
+                        pageTitle: "Example Page",
+                        src: "https://cdn.example.com/audio.m4a",
+                        currentSrc: "https://cdn.example.com/audio.m4a",
+                        mimeType: "audio/mp4",
+                        mediaType: .audio,
+                        currentTime: 45.0,
+                        duration: 300.0,
+                        paused: false,
+                        ended: false,
+                        playbackRate: 1.0,
+                        muted: false,
+                        volume: 1.0,
+                        readyState: 4,
+                        networkState: 1,
+                        presentationMode: .inline,
+                        isInvisible: false
+                    )
+                )
+            )
+        )
     }
 
     func testPlaylistCandidateSelectorPrefersVisibleDirectAudio() {
