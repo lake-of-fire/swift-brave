@@ -2,8 +2,8 @@ import Foundation
 import WebKit
 import SwiftUIWebView
 
-public struct PlaylistWebScriptSet: Sendable {
-    public let playlistScripts: PlaylistBuiltScriptSet
+public struct WebMediaScriptSet: Sendable {
+    public let playlistScripts: WebMediaBuiltScriptSet
     public let userScripts: [WebViewUserScript]
 
     public var messageHandlerName: String {
@@ -19,14 +19,14 @@ public struct PlaylistWebScriptSet: Sendable {
     }
 }
 
-public enum PlaylistWebScripts {
+public enum WebMediaScripts {
     public static func make(
         messageHandlerName: String,
         allowedDomains: Set<String> = [],
-        configuration: PlaylistScriptConfiguration? = nil
-    ) throws -> PlaylistWebScriptSet {
-        let configuration = configuration ?? PlaylistScriptConfiguration(messageHandlerName: messageHandlerName)
-        let playlistScripts = try PlaylistScriptEngine.makeScriptSet(configuration: configuration)
+        configuration: WebMediaScriptConfiguration? = nil
+    ) throws -> WebMediaScriptSet {
+        let configuration = configuration ?? WebMediaScriptConfiguration(messageHandlerName: messageHandlerName)
+        let playlistScripts = try WebMediaScriptEngine.makeScriptSet(configuration: configuration)
         let userScripts = [
             WebViewUserScript(
                 source: playlistScripts.firefoxShimSource,
@@ -51,43 +51,43 @@ public enum PlaylistWebScripts {
             ),
         ]
 
-        return PlaylistWebScriptSet(
+        return WebMediaScriptSet(
             playlistScripts: playlistScripts,
             userScripts: userScripts
         )
     }
 }
 
-public enum PlaylistWebMessageDecoder {
+public enum WebMediaMessageDecoder {
     public static func decode(
         message: WebViewMessage,
-        scriptSet: PlaylistWebScriptSet
-    ) -> PlaylistScriptMessage? {
+        scriptSet: WebMediaScriptSet
+    ) -> WebMediaScriptMessage? {
         decode(body: message.body, scriptSet: scriptSet)
     }
 
     public static func decode(
         body: Any,
-        scriptSet: PlaylistWebScriptSet
-    ) -> PlaylistScriptMessage? {
-        PlaylistScriptMessageDecoder.decode(
+        scriptSet: WebMediaScriptSet
+    ) -> WebMediaScriptMessage? {
+        WebMediaScriptMessageDecoder.decode(
             body: body,
             expectingSecurityToken: scriptSet.securityToken
         )
     }
 }
 
-public enum PlaylistCandidateSelector {
+public enum WebMediaCandidateSelector {
     public static func preferredCandidate(
-        from candidates: [PlaylistInfo],
+        from candidates: [WebMediaInfo],
         preferringAudio: Bool = true
-    ) -> PlaylistInfo? {
+    ) -> WebMediaInfo? {
         collapsedCandidates(from: candidates).max { lhs, rhs in
             compare(lhs, rhs, preferringAudio: preferringAudio) == .orderedAscending
         }
     }
 
-    private static func collapsedCandidates(from candidates: [PlaylistInfo]) -> [PlaylistInfo] {
+    private static func collapsedCandidates(from candidates: [WebMediaInfo]) -> [WebMediaInfo] {
         Dictionary(grouping: candidates) { candidate in
             candidate.tagId.isEmpty ? UUID().uuidString : candidate.tagId
         }
@@ -100,8 +100,8 @@ public enum PlaylistCandidateSelector {
     }
 
     private static func compare(
-        _ lhs: PlaylistInfo,
-        _ rhs: PlaylistInfo,
+        _ lhs: WebMediaInfo,
+        _ rhs: WebMediaInfo,
         preferringAudio: Bool
     ) -> ComparisonResult {
         let lhsScore = score(lhs, preferringAudio: preferringAudio)
@@ -121,7 +121,7 @@ public enum PlaylistCandidateSelector {
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name)
     }
 
-    private static func score(_ candidate: PlaylistInfo, preferringAudio: Bool) -> Int {
+    private static func score(_ candidate: WebMediaInfo, preferringAudio: Bool) -> Int {
         var score = 0
         if !candidate.isInvisible {
             score += 8
@@ -159,8 +159,8 @@ public enum PlaylistCandidateSelector {
     }
 
     private static func compareRefreshedCandidates(
-        _ lhs: PlaylistInfo,
-        _ rhs: PlaylistInfo
+        _ lhs: WebMediaInfo,
+        _ rhs: WebMediaInfo
     ) -> ComparisonResult {
         let lhsScore = refreshScore(lhs)
         let rhsScore = refreshScore(rhs)
@@ -173,7 +173,7 @@ public enum PlaylistCandidateSelector {
         return lhs.src.localizedCaseInsensitiveCompare(rhs.src)
     }
 
-    private static func refreshScore(_ candidate: PlaylistInfo) -> Int {
+    private static func refreshScore(_ candidate: WebMediaInfo) -> Int {
         var score = 0
         if candidate.isHTTPSource {
             score += 8
@@ -191,7 +191,7 @@ public enum PlaylistCandidateSelector {
     }
 
     private static func playbackPriority(
-        _ playbackKind: PlaylistPlaybackKind,
+        _ playbackKind: WebMediaPlaybackKind,
         preferringAudio: Bool
     ) -> Int {
         if preferringAudio {
@@ -216,13 +216,13 @@ public enum PlaylistCandidateSelector {
     }
 }
 
-public enum PlaylistRequestContextBuilder {
+public enum WebMediaRequestContextBuilder {
     public static func make(
         userAgent: String? = nil,
         referer: URL? = nil,
         cookies: [HTTPCookie] = []
-    ) -> PlaylistMediaRequestContext {
-        PlaylistMediaRequestContext(
+    ) -> WebMediaRequestContext {
+        WebMediaRequestContext(
             userAgent: userAgent,
             referer: referer,
             cookieHeader: cookieHeader(for: cookies)
@@ -233,7 +233,7 @@ public enum PlaylistRequestContextBuilder {
     public static func make(
         webView: WKWebView,
         referer: URL? = nil
-    ) async -> PlaylistMediaRequestContext {
+    ) async -> WebMediaRequestContext {
         let cookies = await cookies(from: webView.configuration.websiteDataStore.httpCookieStore)
         let userAgent = await resolveUserAgent(for: webView)
         return make(

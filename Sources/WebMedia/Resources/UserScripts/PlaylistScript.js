@@ -25,19 +25,6 @@ window.__firefox__.includeOnce("Playlist", function($) {
     return value;
   }
 
-  function clamp_unit_interval(value) {
-    if (is_nan(value) || is_infinite(value)) {
-      return 0.0;
-    }
-    if (value < 0) {
-      return 0.0;
-    }
-    if (value > 1) {
-      return 1.0;
-    }
-    return value;
-  }
-
   // Algorithm:
   // Generate a random number from 0 to 256
   // Roll-Over clamp to the range [0, 15]
@@ -78,41 +65,25 @@ window.__firefox__.includeOnce("Playlist", function($) {
     }
   }
 
-  function page_context() {
-    var location = "";
-    var pageTitle = "";
-
-    try {
-      location = window.top.location.href;
-      pageTitle = window.top.document.title;
-    } catch(error) {
-      location = window.location.href;
-      pageTitle = document.title;
-    }
-
-    return {
-      location: location,
-      pageTitle: pageTitle
-    };
-  }
-
-  function post_message(payload) {
-    $(function() {
-      $.postNativeMessage('$<message_handler>', Object.assign({
-        "securityToken": SECURITY_TOKEN
-      }, payload));
-    })();
-  }
-
   let sendMessage = $(function(name, node, target, type, detected) {
     $(function() {
-      var context = page_context();
+      var location = "";
+      var pageTitle = "";
 
-      post_message({
+      try {
+        location = window.top.location.href;
+        pageTitle = window.top.document.title;
+      } catch(error) {
+        location = window.location.href;
+        pageTitle = document.title;
+      }
+
+      $.postNativeMessage('$<message_handler>', {
+        "securityToken": SECURITY_TOKEN,
         "name": name,
         "src": node.src,
-        "pageSrc": context.location,
-        "pageTitle": context.pageTitle,
+        "pageSrc": location,
+        "pageTitle": pageTitle,
         "mimeType": type,
         "duration": clamp_duration(target.duration),
         "detected": detected,
@@ -132,123 +103,6 @@ window.__firefox__.includeOnce("Playlist", function($) {
 
   function isSourceNode(node) {
     return node.constructor.name === 'HTMLSourceElement' || node.tagName === "SOURCE";
-  }
-
-  function resolvePlaybackPresentationMode(target) {
-    try {
-      if (document.pictureInPictureElement === target) {
-        return 'picture-in-picture';
-      }
-    } catch(error) {}
-
-    if (target && typeof target.webkitPresentationMode === 'string' && target.webkitPresentationMode !== '') {
-      return target.webkitPresentationMode;
-    }
-
-    return 'inline';
-  }
-
-  function stopPlaybackHeartbeat(target) {
-    if (!target || !target.$<telemetryHeartbeat>) {
-      return;
-    }
-
-    clearInterval(target.$<telemetryHeartbeat>);
-    target.$<telemetryHeartbeat> = null;
-  }
-
-  function shouldHeartbeat(target) {
-    return !!target && !target.paused && !target.ended && target.readyState >= 2;
-  }
-
-  function sendPlaybackMessage(target, type, eventName) {
-    if (!target) {
-      return;
-    }
-
-    tagNode(target);
-    var context = page_context();
-
-    post_message({
-      "messageKind": "playback",
-      "eventName": eventName,
-      "tagId": target.$<tagUUID>,
-      "pageSrc": context.location,
-      "pageTitle": context.pageTitle,
-      "src": target.src || "",
-      "currentSrc": target.currentSrc || "",
-      "mimeType": target.currentSrc ? (target.getAttribute('type') || '') : (type || ''),
-      "mediaType": type || (isVideoNode(target) ? 'video' : 'audio'),
-      "currentTime": clamp_duration(target.currentTime),
-      "duration": clamp_duration(target.duration),
-      "paused": !!target.paused,
-      "ended": !!target.ended,
-      "playbackRate": is_nan(target.playbackRate) || is_infinite(target.playbackRate) ? 1.0 : target.playbackRate,
-      "muted": !!target.muted,
-      "volume": clamp_unit_interval(target.volume),
-      "readyState": target.readyState || 0,
-      "networkState": target.networkState || 0,
-      "presentationMode": resolvePlaybackPresentationMode(target),
-      "isInvisible": !target.parentNode
-    });
-  }
-
-  function updatePlaybackHeartbeat(target, type) {
-    if (!shouldHeartbeat(target)) {
-      stopPlaybackHeartbeat(target);
-      return;
-    }
-
-    if (target.$<telemetryHeartbeat>) {
-      return;
-    }
-
-    target.$<telemetryHeartbeat> = setInterval(function() {
-      if (!shouldHeartbeat(target)) {
-        stopPlaybackHeartbeat(target);
-        return;
-      }
-      sendPlaybackMessage(target, type, 'heartbeat');
-    }, 750);
-  }
-
-  function attachPlaybackTelemetry(target, type) {
-    if (!target || target.$<telemetryAttached>) {
-      return;
-    }
-
-    target.$<telemetryAttached> = true;
-
-    [
-      'play',
-      'pause',
-      'seeking',
-      'seeked',
-      'timeupdate',
-      'ratechange',
-      'volumechange',
-      'waiting',
-      'playing',
-      'stalled',
-      'ended',
-      'loadedmetadata',
-      'durationchange',
-      'emptied',
-      'error',
-      'enterpictureinpicture',
-      'leavepictureinpicture',
-      'webkitpresentationmodechanged'
-    ].forEach(function(eventName) {
-      target.addEventListener(eventName, function() {
-        var normalizedEventName = eventName === 'webkitpresentationmodechanged'
-          ? 'presentationmodechanged'
-          : eventName;
-        sendPlaybackMessage(target, type, normalizedEventName);
-        updatePlaybackHeartbeat(target, type);
-      }, true);
-    });
-
-    updatePlaybackHeartbeat(target, type);
   }
 
   function notifyNode(target, type, detected, ignoreSource) {
@@ -282,7 +136,6 @@ window.__firefox__.includeOnce("Playlist", function($) {
 
       if (ignoreSource || (target.src && target.src !== "")) {
         tagNode(target);
-        attachPlaybackTelemetry(target, type);
         sendMessage(name, target, target, type, detected);
       }
       else {
@@ -290,7 +143,6 @@ window.__firefox__.includeOnce("Playlist", function($) {
           if (isSourceNode(node)) {
             if (node.src && node.src !== "") {
               tagNode(target);
-              attachPlaybackTelemetry(target, type);
               sendMessage(name, node, target, type, detected);
             }
           }
@@ -394,20 +246,6 @@ window.__firefox__.includeOnce("Playlist", function($) {
         value: null
       });
 
-      Object.defineProperty(HTMLMediaElement.prototype, '$<telemetryAttached>', {
-        enumerable: false,
-        configurable: false,
-        writable: true,
-        value: false
-      });
-
-      Object.defineProperty(HTMLMediaElement.prototype, '$<telemetryHeartbeat>', {
-        enumerable: false,
-        configurable: false,
-        writable: true,
-        value: null
-      });
-
       if (useObservers) {
         let observeNode = function(node) {
           function processNode(node) {
@@ -448,20 +286,6 @@ window.__firefox__.includeOnce("Playlist", function($) {
         documentObserver.observe(document, { subtree: true, childList: true });
       } else {
         Object.defineProperty(HTMLMediaElement.prototype, '$<tagUUID>', {
-          enumerable: false,
-          configurable: false,
-          writable: true,
-          value: null
-        });
-
-        Object.defineProperty(HTMLMediaElement.prototype, '$<telemetryAttached>', {
-          enumerable: false,
-          configurable: false,
-          writable: true,
-          value: false
-        });
-
-        Object.defineProperty(HTMLMediaElement.prototype, '$<telemetryHeartbeat>', {
           enumerable: false,
           configurable: false,
           writable: true,
@@ -528,7 +352,8 @@ window.__firefox__.includeOnce("Playlist", function($) {
 
           if (videos.length == 0 && audios.length == 0) {
             setTimeout(function() {
-              post_message({
+              $.postNativeMessage('$<message_handler>', {
+                "securityToken": SECURITY_TOKEN,
                 "state": "cancel"
               });
             }, 10000);
@@ -554,7 +379,8 @@ window.__firefox__.includeOnce("Playlist", function($) {
           fetchMedia();
 
           $(function() {
-            post_message({
+            $.postNativeMessage('$<message_handler>', {
+              "securityToken": SECURITY_TOKEN,
               "state": document.readyState
             });
           })();

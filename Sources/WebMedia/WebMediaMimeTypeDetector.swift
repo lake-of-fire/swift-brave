@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import UniformTypeIdentifiers
 
-public struct PlaylistMimeTypeDetector {
+public struct WebMediaMimeTypeDetector {
     public let mimeType: String?
     public let fileExtension: String?
 
@@ -94,13 +94,13 @@ public struct PlaylistMimeTypeDetector {
         leadingData: Data? = nil,
         fallback: String
     ) -> String {
-        if let mimeTypeExtension = PlaylistMimeTypeDetector(mimeType: mimeType).fileExtension {
+        if let mimeTypeExtension = WebMediaMimeTypeDetector(mimeType: mimeType).fileExtension {
             return mimeTypeExtension
         }
-        if let url, let urlExtension = PlaylistMimeTypeDetector(url: url).fileExtension {
+        if let url, let urlExtension = WebMediaMimeTypeDetector(url: url).fileExtension {
             return urlExtension
         }
-        if let leadingData, let dataExtension = PlaylistMimeTypeDetector(data: leadingData).fileExtension {
+        if let leadingData, let dataExtension = WebMediaMimeTypeDetector(data: leadingData).fileExtension {
             return dataExtension
         }
         return fallback

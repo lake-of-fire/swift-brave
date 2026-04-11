@@ -2,9 +2,9 @@
 
 Swift Package for a trimmed Brave-derived adblock and media-capture stack.
 
-## BravePlaylist
+## WebMedia
 
-`BravePlaylist` is the storage-free/webview-neutral extraction layer plus a hidden offline media store.
+`WebMedia` is the storage-free/webview-neutral extraction layer plus a hidden offline media store.
 
 It currently provides:
 
@@ -28,12 +28,12 @@ It intentionally does **not** include Brave playlist UI, folders, CoreData model
 
 ### Core types
 
-- `PlaylistWebScripts`
-- `PlaylistWebMessageDecoder`
-- `PlaylistCandidateSelector`
-- `PlaylistMediaStreamer`
-- `PlaylistOfflineMediaStore`
-- `PlaylistLibrary`
+- `WebMediaScripts`
+- `WebMediaMessageDecoder`
+- `WebMediaCandidateSelector`
+- `WebMediaStreamer`
+- `WebMediaOfflineStore`
+- `WebMediaLibrary`
 
 ### Storage model
 
@@ -48,13 +48,13 @@ The package marks these roots as excluded from backup by default and does not ex
 
 There are two layers:
 
-1. `PlaylistMediaStreamer`
-   Resolves a `PlaylistInfo` into a playable/downloadable `PlaylistResolvedMedia`.
+1. `WebMediaStreamer`
+   Resolves a `WebMediaInfo` into a playable/downloadable `ResolvedWebMedia`.
 
-2. `PlaylistOfflineMediaStore`
+2. `WebMediaOfflineStore`
    Stores resolved media, keeps per-item metadata, tracks download state, restores unfinished downloads on launch, and manages hidden files.
 
-`PlaylistLibrary` composes both layers for app code that wants a single façade.
+`WebMediaLibrary` composes both layers for app code that wants a single façade.
 
 ### Download control model
 
@@ -69,7 +69,7 @@ This is the intended minimal control surface for Manabi/LakeOfFire before any pl
 
 ### Retention and state model
 
-`PlaylistDownloadRecord` and `PlaylistStoredMedia` both expose:
+`WebMediaDownloadRecord` and `StoredWebMedia` both expose:
 
 - `storedMediaState`
 - `storageScope`
@@ -90,7 +90,7 @@ You can later promote or demote retention with `updateRetentionPolicy(...)` with
 
 ### Thumbnail model
 
-`PlaylistThumbnailRequest` supports:
+`WebMediaThumbnailRequest` supports:
 
 - `.automatic()`
   Eager for media-derived thumbnails, lazy when a separate remote thumbnail URL would require extra network work.
@@ -103,27 +103,27 @@ This keeps media download latency separate from thumbnail fetch latency when the
 
 ### Recommended integration for LakeOfFire / Manabi
 
-1. Detect candidates from the visible webview with `PlaylistWebScripts` and `PlaylistWebMessageDecoder`.
-2. Pick the preferred candidate with `PlaylistCandidateSelector`.
-3. When the user wants playback/transcription/download behavior, call `PlaylistLibrary.enqueueDownload(...)` or `PlaylistLibrary.download(...)`.
+1. Detect candidates from the visible webview with `WebMediaScripts` and `WebMediaMessageDecoder`.
+2. Pick the preferred candidate with `WebMediaCandidateSelector`.
+3. When the user wants playback/transcription/download behavior, call `WebMediaLibrary.enqueueDownload(...)` or `WebMediaLibrary.download(...)`.
 4. Use `.transient` plus `.untilPageChange` or `.untilSessionEnds` when the media is only needed for the current page/session.
 5. Use `.persistent` when the user explicitly chooses offline save.
-6. On app launch, call `PlaylistLibrary.restorePendingDownloads()` to restart queued/downloading items.
-7. On navigation changes, use `PlaylistLibrary.deleteTransientMedia(forPageURL:)` or `PlaylistLibrary.purgeTransientMedia(exceptPageURLs:)`.
-8. When a transient item should be kept, call `PlaylistLibrary.updateRetentionPolicy(.persistent, for: id)` or `PlaylistLibrary.updateStorageScope(.persistent, for: id)`.
-9. When UI needs artwork later, call `PlaylistLibrary.ensureThumbnail(id:)` instead of forcing thumbnail work into the initial download path.
-10. When the page changes, call `PlaylistLibrary.handlePageDidChange(from:to:)`.
-11. When the app/session ends, call `PlaylistLibrary.handleSessionDidEnd()`.
+6. On app launch, call `WebMediaLibrary.restorePendingDownloads()` to restart queued/downloading items.
+7. On navigation changes, use `WebMediaLibrary.deleteTransientMedia(forPageURL:)` or `WebMediaLibrary.purgeTransientMedia(exceptPageURLs:)`.
+8. When a transient item should be kept, call `WebMediaLibrary.updateRetentionPolicy(.persistent, for: id)` or `WebMediaLibrary.updateStorageScope(.persistent, for: id)`.
+9. When UI needs artwork later, call `WebMediaLibrary.ensureThumbnail(id:)` instead of forcing thumbnail work into the initial download path.
+10. When the page changes, call `WebMediaLibrary.handlePageDidChange(from:to:)`.
+11. When the app/session ends, call `WebMediaLibrary.handleSessionDidEnd()`.
 
 ### APIs you will likely use next in Manabi
 
 ```swift
-let library = PlaylistLibrary(
-    mediaStreamer: PlaylistMediaStreamer(
+let library = WebMediaLibrary(
+    mediaStreamer: WebMediaStreamer(
         urlSession: .shared,
         webLoaderFactory: yourHiddenWebLoaderFactory
     ),
-    offlineStore: PlaylistOfflineMediaStore()
+    offlineStore: WebMediaOfflineStore()
 )
 
 let record = try await library.enqueueDownload(

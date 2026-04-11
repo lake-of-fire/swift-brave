@@ -1,17 +1,17 @@
 import Foundation
 
-public enum PlaylistScriptError: Error, LocalizedError {
+public enum WebMediaScriptError: Error, LocalizedError {
     case missingResource(String)
 
     public var errorDescription: String? {
         switch self {
         case .missingResource(let name):
-            "Missing bundled Brave playlist script resource: \(name)"
+            "Missing bundled web media script resource: \(name)"
         }
     }
 }
 
-public struct PlaylistScriptConfiguration: Hashable, Sendable {
+public struct WebMediaScriptConfiguration: Hashable, Sendable {
     public let messageHandlerName: String
     public let securityToken: String
     public let tagAttributeName: String
@@ -41,8 +41,8 @@ public struct PlaylistScriptConfiguration: Hashable, Sendable {
     }
 }
 
-public struct PlaylistBuiltScriptSet: Sendable {
-    public let configuration: PlaylistScriptConfiguration
+public struct WebMediaBuiltScriptSet: Sendable {
+    public let configuration: WebMediaScriptConfiguration
     public let firefoxShimSource: String
     public let mediaSourceOverrideSource: String
     public let detectorSource: String
@@ -52,10 +52,10 @@ public struct PlaylistBuiltScriptSet: Sendable {
     }
 }
 
-public enum PlaylistScriptEngine {
+public enum WebMediaScriptEngine {
     public static func makeScriptSet(
-        configuration: PlaylistScriptConfiguration
-    ) throws -> PlaylistBuiltScriptSet {
+        configuration: WebMediaScriptConfiguration
+    ) throws -> WebMediaBuiltScriptSet {
         let firefoxShimSource = try loadResource(named: "__firefox__")
         let swizzler = try loadResource(named: "PlaylistSwizzlerScript")
         let detector = try loadResource(named: "PlaylistScript")
@@ -82,7 +82,7 @@ public enum PlaylistScriptEngine {
             script: swizzler
         )
 
-        return PlaylistBuiltScriptSet(
+        return WebMediaBuiltScriptSet(
             configuration: configuration,
             firefoxShimSource: firefoxShimSource,
             mediaSourceOverrideSource: mediaSourceOverrideSource,
@@ -136,7 +136,7 @@ public enum PlaylistScriptEngine {
         guard let url,
               let source = try? String(contentsOf: url)
         else {
-            throw PlaylistScriptError.missingResource(name)
+            throw WebMediaScriptError.missingResource(name)
         }
         return source
     }

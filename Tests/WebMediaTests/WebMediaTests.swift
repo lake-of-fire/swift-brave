@@ -1,9 +1,9 @@
 import XCTest
 import CryptoKit
-@testable import BravePlaylist
+@testable import WebMedia
 
-final class BravePlaylistTests: XCTestCase {
-    func testPlaylistInfoDecodesAndNormalizesRelativeURL() throws {
+final class WebMediaTests: XCTestCase {
+    func testWebMediaInfoDecodesAndNormalizesRelativeURL() throws {
         let body: [String: Any] = [
             "name": "Example",
             "src": "/video/master.m3u8",
@@ -16,14 +16,14 @@ final class BravePlaylistTests: XCTestCase {
             "invisible": false,
         ]
 
-        let info = try XCTUnwrap(PlaylistInfo.decode(from: body))
+        let info = try XCTUnwrap(WebMediaInfo.decode(from: body))
         XCTAssertEqual(info.src, "https://example.com/video/master.m3u8")
         XCTAssertEqual(info.kind, .video)
         XCTAssertFalse(info.isInvisible)
     }
 
-    func testPlaylistInfoNormalizesProtocolRelativeURL() {
-        let info = PlaylistInfo(
+    func testWebMediaInfoNormalizesProtocolRelativeURL() {
+        let info = WebMediaInfo(
             name: "Example",
             src: "//cdn.example.com/audio.mp3",
             pageSrc: "https://example.com/watch?v=1",
@@ -40,8 +40,8 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertTrue(info.isHTTPSource)
     }
 
-    func testPlaylistInfoTreatsM3U8AsHLSContainer() {
-        let info = PlaylistInfo(
+    func testWebMediaInfoTreatsM3U8AsHLSContainer() {
+        let info = WebMediaInfo(
             name: "Stream",
             src: "https://cdn.example.com/master.m3u8",
             pageSrc: "https://example.com/watch?v=1",
@@ -57,8 +57,8 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(info.kind, .unknown)
     }
 
-    func testPlaylistInfoDerivesAudioOnlyPlaybackKindForHLSAudioStream() {
-        let info = PlaylistInfo(
+    func testWebMediaInfoDerivesAudioOnlyPlaybackKindForHLSAudioStream() {
+        let info = WebMediaInfo(
             name: "Podcast audio stream",
             src: "https://cdn.example.com/audio/master.m3u8",
             pageSrc: "https://example.com/listen",
@@ -81,7 +81,7 @@ final class BravePlaylistTests: XCTestCase {
         ]
 
         XCTAssertNil(
-            PlaylistScriptMessageDecoder.decode(
+            WebMediaScriptMessageDecoder.decode(
                 body: body,
                 expectingSecurityToken: "expected"
             )
@@ -114,7 +114,7 @@ final class BravePlaylistTests: XCTestCase {
         ]
 
         let decoded = try XCTUnwrap(
-            PlaylistScriptMessageDecoder.decode(
+            WebMediaScriptMessageDecoder.decode(
                 body: body,
                 expectingSecurityToken: "expected-token"
             )
@@ -133,39 +133,39 @@ final class BravePlaylistTests: XCTestCase {
     }
 
     func testScriptSetBuildsExpectedHandlerNames() throws {
-        let configuration = PlaylistScriptConfiguration(
-            messageHandlerName: "playlistHandler",
+        let configuration = WebMediaScriptConfiguration(
+            messageHandlerName: "mediaHandler",
             securityToken: "security-token",
             namespaceToken: "namespace"
         )
 
-        let scripts = try PlaylistScriptEngine.makeScriptSet(configuration: configuration)
+        let scripts = try WebMediaScriptEngine.makeScriptSet(configuration: configuration)
 
         XCTAssertTrue(scripts.detectorSource.contains("const SECURITY_TOKEN = 'security-token';"))
-        XCTAssertTrue(scripts.detectorSource.contains("playlistHandler"))
+        XCTAssertTrue(scripts.detectorSource.contains("mediaHandler"))
         XCTAssertTrue(scripts.detectorSource.contains("playlistProcessDocumentLoad_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("mediaCurrentTimeFromTag_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("playlistTelemetryAttached_namespace"))
-        XCTAssertTrue(scripts.detectorSource.contains("\"messageKind\": \"playback\""))
+        XCTAssertTrue(scripts.detectorSource.contains("window.webkit.messageHandlers"))
         XCTAssertTrue(scripts.firefoxShimSource.contains("window.__firefox__"))
         XCTAssertTrue(scripts.mediaSourceOverrideSource.contains("delete window.MediaSource;"))
     }
 
-    func testPlaylistWebScriptsBuildExpectedUserScripts() throws {
-        let scriptSet = try PlaylistWebScripts.make(
-            messageHandlerName: "playlistHandler",
+    func testWebMediaScriptsBuildExpectedUserScripts() throws {
+        let scriptSet = try WebMediaScripts.make(
+            messageHandlerName: "mediaHandler",
             allowedDomains: ["youtube.com"],
-            configuration: PlaylistScriptConfiguration(
-                messageHandlerName: "playlistHandler",
+            configuration: WebMediaScriptConfiguration(
+                messageHandlerName: "mediaHandler",
                 securityToken: "security-token",
                 namespaceToken: "namespace"
             )
         )
 
-        XCTAssertEqual(scriptSet.messageHandlerName, "playlistHandler")
+        XCTAssertEqual(scriptSet.messageHandlerName, "mediaHandler")
         XCTAssertEqual(scriptSet.userScripts.count, 3)
         XCTAssertEqual(scriptSet.userScripts.first?.allowedDomains, ["youtube.com"])
-        XCTAssertTrue(scriptSet.userScripts[2].source.contains("playlistHandler"))
+        XCTAssertTrue(scriptSet.userScripts[2].source.contains("mediaHandler"))
         XCTAssertTrue(scriptSet.userScripts[2].source.contains("security-token"))
         XCTAssertEqual(
             scriptSet.processDocumentLoadJavaScript,
@@ -173,11 +173,11 @@ final class BravePlaylistTests: XCTestCase {
         )
     }
 
-    func testPlaylistWebMessageDecoderUsesSecurityToken() throws {
-        let scriptSet = try PlaylistWebScripts.make(
-            messageHandlerName: "playlistHandler",
-            configuration: PlaylistScriptConfiguration(
-                messageHandlerName: "playlistHandler",
+    func testWebMediaMessageDecoderUsesSecurityToken() throws {
+        let scriptSet = try WebMediaScripts.make(
+            messageHandlerName: "mediaHandler",
+            configuration: WebMediaScriptConfiguration(
+                messageHandlerName: "mediaHandler",
                 securityToken: "expected-token",
                 namespaceToken: "namespace"
             )
@@ -188,15 +188,15 @@ final class BravePlaylistTests: XCTestCase {
             "state": "interactive",
         ]
 
-        let decoded = PlaylistWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
+        let decoded = WebMediaMessageDecoder.decode(body: body, scriptSet: scriptSet)
         XCTAssertEqual(decoded, .readyState(.init(state: "interactive")))
     }
 
-    func testPlaylistWebMessageDecoderDecodesPlaybackEvents() throws {
-        let scriptSet = try PlaylistWebScripts.make(
-            messageHandlerName: "playlistHandler",
-            configuration: PlaylistScriptConfiguration(
-                messageHandlerName: "playlistHandler",
+    func testWebMediaMessageDecoderDecodesPlaybackEvents() throws {
+        let scriptSet = try WebMediaScripts.make(
+            messageHandlerName: "mediaHandler",
+            configuration: WebMediaScriptConfiguration(
+                messageHandlerName: "mediaHandler",
                 securityToken: "expected-token",
                 namespaceToken: "namespace"
             )
@@ -226,13 +226,13 @@ final class BravePlaylistTests: XCTestCase {
             "isInvisible": false,
         ]
 
-        let decoded = PlaylistWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
+        let decoded = WebMediaMessageDecoder.decode(body: body, scriptSet: scriptSet)
         XCTAssertEqual(
             decoded,
             .playback(
-                PlaylistPlaybackEvent(
+                WebMediaPlaybackEvent(
                     eventName: .heartbeat,
-                    snapshot: PlaylistPlaybackSnapshot(
+                    snapshot: WebMediaPlaybackSnapshot(
                         tagId: "player-1",
                         pageSrc: "https://example.com/watch?v=1",
                         pageTitle: "Example Page",
@@ -257,8 +257,8 @@ final class BravePlaylistTests: XCTestCase {
         )
     }
 
-    func testPlaylistCandidateSelectorPrefersVisibleDirectAudio() {
-        let invisibleVideo = PlaylistInfo(
+    func testWebMediaCandidateSelectorPrefersVisibleDirectAudio() {
+        let invisibleVideo = WebMediaInfo(
             name: "Video",
             src: "https://example.com/video.mp4",
             pageSrc: "https://example.com/watch",
@@ -269,7 +269,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "video",
             isInvisible: true
         )
-        let visibleAudio = PlaylistInfo(
+        let visibleAudio = WebMediaInfo(
             name: "Audio",
             src: "https://example.com/audio.m4a",
             pageSrc: "https://example.com/watch",
@@ -281,15 +281,80 @@ final class BravePlaylistTests: XCTestCase {
             isInvisible: false
         )
 
-        let preferred = PlaylistCandidateSelector.preferredCandidate(
+        let preferred = WebMediaCandidateSelector.preferredCandidate(
             from: [invisibleVideo, visibleAudio]
         )
 
         XCTAssertEqual(preferred?.tagId, "audio")
     }
 
-    func testPlaylistCandidateSelectorPrefersAudioOnlyHLSOverVideoHLS() {
-        let audioStream = PlaylistInfo(
+    func testMediaCaptureCandidateSelectorUsesNeutralSurface() {
+        let invisibleVideo = WebMediaCaptureCandidate(
+            name: "Video",
+            sourceURL: URL(string: "https://example.com/video.mp4"),
+            pageURL: URL(string: "https://example.com/watch"),
+            pageTitle: "Watch",
+            mimeType: "video/mp4",
+            duration: 100,
+            detected: true,
+            tagID: "video",
+            isInvisible: true
+        )
+        let visibleAudio = WebMediaCaptureCandidate(
+            name: "Audio",
+            sourceURL: URL(string: "https://example.com/audio.m4a"),
+            pageURL: URL(string: "https://example.com/watch"),
+            pageTitle: "Watch",
+            mimeType: "audio/mp4",
+            duration: 30,
+            detected: true,
+            tagID: "audio",
+            isInvisible: false
+        )
+
+        let preferred = WebMediaCaptureCandidateSelector.preferredCandidate(
+            from: [invisibleVideo, visibleAudio]
+        )
+
+        XCTAssertEqual(preferred?.tagID, "audio")
+        XCTAssertEqual(preferred?.preferredDisplayName, "Audio")
+    }
+
+    func testMediaCaptureMessageDecoderWrapsCandidateMessage() throws {
+        let scriptSet = try WebMediaCaptureWebScripts.make(
+            messageHandlerName: "mediaHandler",
+            configuration: WebMediaCaptureScriptConfiguration(
+                messageHandlerName: "mediaHandler",
+                securityToken: "expected-token",
+                namespaceToken: "namespace"
+            )
+        )
+
+        let body: [String: Any] = [
+            "securityToken": "expected-token",
+            "name": "Example",
+            "src": "/video/master.m3u8",
+            "pageSrc": "https://example.com/watch?v=1",
+            "pageTitle": "Example Page",
+            "mimeType": "video/mp4",
+            "duration": 12.5,
+            "detected": true,
+            "tagId": "tag-1",
+            "invisible": false,
+        ]
+
+        let decoded = try XCTUnwrap(WebMediaCaptureMessageDecoder.decode(body: body, scriptSet: scriptSet))
+        guard case .candidate(let candidate) = decoded else {
+            return XCTFail("Expected candidate message")
+        }
+
+        XCTAssertEqual(candidate.tagID, "tag-1")
+        XCTAssertEqual(candidate.pageURL?.absoluteString, "https://example.com/watch?v=1")
+        XCTAssertEqual(candidate.sourceURL?.absoluteString, "https://example.com/video/master.m3u8")
+    }
+
+    func testWebMediaCandidateSelectorPrefersAudioOnlyHLSOverVideoHLS() {
+        let audioStream = WebMediaInfo(
             name: "Audio stream",
             src: "https://example.com/audio/master.m3u8",
             pageSrc: "https://example.com/watch",
@@ -300,7 +365,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "audio-hls",
             isInvisible: false
         )
-        let videoStream = PlaylistInfo(
+        let videoStream = WebMediaInfo(
             name: "Video stream",
             src: "https://example.com/video/master.m3u8",
             pageSrc: "https://example.com/watch",
@@ -312,15 +377,15 @@ final class BravePlaylistTests: XCTestCase {
             isInvisible: false
         )
 
-        let preferred = PlaylistCandidateSelector.preferredCandidate(
+        let preferred = WebMediaCandidateSelector.preferredCandidate(
             from: [videoStream, audioStream]
         )
 
         XCTAssertEqual(preferred?.tagId, "audio-hls")
     }
 
-    func testPlaylistCandidateSelectorPrefersRefreshedDirectURLForSameTag() {
-        let staleBlob = PlaylistInfo(
+    func testWebMediaCandidateSelectorPrefersRefreshedDirectURLForSameTag() {
+        let staleBlob = WebMediaInfo(
             name: "Episode",
             src: "blob:https://example.com/123",
             pageSrc: "https://example.com/watch",
@@ -331,7 +396,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "episode-player",
             isInvisible: false
         )
-        let refreshedDirect = PlaylistInfo(
+        let refreshedDirect = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch",
@@ -343,15 +408,15 @@ final class BravePlaylistTests: XCTestCase {
             isInvisible: false
         )
 
-        let preferred = PlaylistCandidateSelector.preferredCandidate(
+        let preferred = WebMediaCandidateSelector.preferredCandidate(
             from: [staleBlob, refreshedDirect]
         )
 
         XCTAssertEqual(preferred?.src, refreshedDirect.src)
     }
 
-    func testPlaylistCandidateSelectorAvoidsLikelyAdvertisementCandidates() {
-        let advertisement = PlaylistInfo(
+    func testWebMediaCandidateSelectorAvoidsLikelyAdvertisementCandidates() {
+        let advertisement = WebMediaInfo(
             name: "Pre-roll ad",
             src: "https://ads.doubleclick.net/preroll.mp4",
             pageSrc: "https://example.com/watch",
@@ -362,7 +427,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "ad-player",
             isInvisible: false
         )
-        let content = PlaylistInfo(
+        let content = WebMediaInfo(
             name: "Main episode",
             src: "https://cdn.example.com/main.mp4",
             pageSrc: "https://example.com/watch",
@@ -374,7 +439,7 @@ final class BravePlaylistTests: XCTestCase {
             isInvisible: false
         )
 
-        let preferred = PlaylistCandidateSelector.preferredCandidate(
+        let preferred = WebMediaCandidateSelector.preferredCandidate(
             from: [advertisement, content],
             preferringAudio: false
         )
@@ -382,7 +447,7 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(preferred?.tagId, "main-player")
     }
 
-    func testPlaylistRequestContextBuilderIncludesCookieRefererAndUserAgent() {
+    func testWebMediaRequestContextBuilderIncludesCookieRefererAndUserAgent() {
         let cookie = HTTPCookie(properties: [
             .domain: "example.com",
             .path: "/",
@@ -392,7 +457,7 @@ final class BravePlaylistTests: XCTestCase {
             .expires: Date().addingTimeInterval(60),
         ])!
 
-        let context = PlaylistRequestContextBuilder.make(
+        let context = WebMediaRequestContextBuilder.make(
             userAgent: "Manabi",
             referer: URL(string: "https://example.com/watch")!,
             cookies: [cookie]
@@ -419,8 +484,8 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data())
         }
 
-        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
-        let item = PlaylistInfo(
+        let streamer = WebMediaStreamer(urlSession: makeSession())
+        let item = WebMediaInfo(
             name: "Audio",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch/1",
@@ -434,7 +499,7 @@ final class BravePlaylistTests: XCTestCase {
 
         let resolved = try await streamer.resolveMedia(
             item,
-            requestContext: PlaylistMediaRequestContext(
+            requestContext: WebMediaRequestContext(
                 userAgent: "Manabi",
                 referer: URL(string: "https://example.com/watch/1"),
                 cookieHeader: "session=abc123"
@@ -477,8 +542,8 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data())
         }
 
-        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
-        let item = PlaylistInfo(
+        let streamer = WebMediaStreamer(urlSession: makeSession())
+        let item = WebMediaInfo(
             name: "Audio",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch/1",
@@ -496,7 +561,7 @@ final class BravePlaylistTests: XCTestCase {
     }
 
     func testMediaStreamerFallsBackWhenPrimaryURLIsBlob() async throws {
-        let fallbackItem = PlaylistInfo(
+        let fallbackItem = WebMediaInfo(
             name: "Fallback",
             src: "https://media.example.com/video.mp4",
             pageSrc: "https://example.com/watch/1",
@@ -518,12 +583,12 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data())
         }
 
-        let streamer = PlaylistMediaStreamer(
+        let streamer = WebMediaStreamer(
             urlSession: makeSession(),
             webLoaderFactory: MockLoaderFactory(item: fallbackItem)
         )
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Blob",
             src: "blob:https://example.com/123",
             pageSrc: "https://example.com/watch/1",
@@ -541,7 +606,7 @@ final class BravePlaylistTests: XCTestCase {
     }
 
     func testMediaStreamerStopsFallbackLoaderAfterResolution() async throws {
-        let fallbackItem = PlaylistInfo(
+        let fallbackItem = WebMediaInfo(
             name: "Fallback",
             src: "https://media.example.com/video.mp4",
             pageSrc: "https://example.com/watch/1",
@@ -564,12 +629,12 @@ final class BravePlaylistTests: XCTestCase {
         }
 
         let factory = MockLoaderFactory(item: fallbackItem)
-        let streamer = PlaylistMediaStreamer(
+        let streamer = WebMediaStreamer(
             urlSession: makeSession(),
             webLoaderFactory: factory
         )
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Blob",
             src: "blob:https://example.com/123",
             pageSrc: "https://example.com/watch/1",
@@ -586,8 +651,8 @@ final class BravePlaylistTests: XCTestCase {
     }
 
     func testMediaStreamerThrowsFallbackUnavailableForBlobWithoutResolver() async {
-        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
-        let item = PlaylistInfo(
+        let streamer = WebMediaStreamer(urlSession: makeSession())
+        let item = WebMediaInfo(
             name: "Blob",
             src: "blob:https://example.com/123",
             pageSrc: "https://example.com/watch/1",
@@ -602,7 +667,7 @@ final class BravePlaylistTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await streamer.resolveMedia(item)
         ) { error in
-            XCTAssertEqual(error as? PlaylistMediaStreamer.PlaybackError, .fallbackUnavailable)
+            XCTAssertEqual(error as? WebMediaStreamer.PlaybackError, .fallbackUnavailable)
         }
     }
 
@@ -617,8 +682,8 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data())
         }
 
-        let streamer = PlaylistMediaStreamer(urlSession: makeSession())
-        let item = PlaylistInfo(
+        let streamer = WebMediaStreamer(urlSession: makeSession())
+        let item = WebMediaInfo(
             name: "Unknown",
             src: "https://cdn.example.com/stream",
             pageSrc: "https://example.com/watch/1",
@@ -633,7 +698,7 @@ final class BravePlaylistTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await streamer.resolveMedia(item)
         ) { error in
-            XCTAssertEqual(error as? PlaylistMediaStreamer.PlaybackError, .couldNotDeterminePlayableMedia)
+            XCTAssertEqual(error as? WebMediaStreamer.PlaybackError, .couldNotDeterminePlayableMedia)
         }
     }
 
@@ -641,7 +706,7 @@ final class BravePlaylistTests: XCTestCase {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch?v=1",
@@ -652,7 +717,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "episode-1",
             isInvisible: false
         )
-        let resolvedMedia = PlaylistResolvedMedia(
+        let resolvedMedia = ResolvedWebMedia(
             playlistInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
             mimeType: "audio/mp4",
@@ -693,7 +758,7 @@ final class BravePlaylistTests: XCTestCase {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch?v=1",
@@ -704,14 +769,14 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "episode-1",
             isInvisible: false
         )
-        let initial = PlaylistResolvedMedia(
+        let initial = ResolvedWebMedia(
             playlistInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
             mimeType: "audio/mp4",
             requestHeaders: [:],
             resolutionMethod: .direct
         )
-        let refreshed = PlaylistResolvedMedia(
+        let refreshed = ResolvedWebMedia(
             playlistInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=2")!,
             mimeType: "audio/mp4",
@@ -731,7 +796,7 @@ final class BravePlaylistTests: XCTestCase {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch?v=1",
@@ -742,7 +807,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "episode-1",
             isInvisible: false
         )
-        let resolvedMedia = PlaylistResolvedMedia(
+        let resolvedMedia = ResolvedWebMedia(
             playlistInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
             mimeType: "audio/mp4",
@@ -769,8 +834,8 @@ final class BravePlaylistTests: XCTestCase {
 
         let pageURL = URL(string: "https://example.com/watch?v=shared")!
         let transient = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Transient",
                     src: "https://cdn.example.com/transient.mp4",
                     pageSrc: pageURL.absoluteString,
@@ -792,8 +857,8 @@ final class BravePlaylistTests: XCTestCase {
         _ = transient
 
         let persistent = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Persistent",
                     src: "https://cdn.example.com/persistent.mp4",
                     pageSrc: pageURL.absoluteString,
@@ -822,7 +887,7 @@ final class BravePlaylistTests: XCTestCase {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch?v=thumb-lazy",
@@ -835,7 +900,7 @@ final class BravePlaylistTests: XCTestCase {
         )
         let thumbnailData = Data("lazy-thumb".utf8)
         let stored = try await fixture.store.download(
-            PlaylistResolvedMedia(
+            ResolvedWebMedia(
                 playlistInfo: item,
                 url: URL(string: "https://cdn.example.com/audio.m4a?token=lazy")!,
                 mimeType: "audio/mp4",
@@ -843,7 +908,7 @@ final class BravePlaylistTests: XCTestCase {
                 resolutionMethod: .direct
             ),
             storageScope: .transient,
-            thumbnail: PlaylistThumbnailRequest(
+            thumbnail: WebMediaThumbnailRequest(
                 loadingPolicy: .lazy,
                 generateFromMedia: false,
                 imageData: thumbnailData,
@@ -865,8 +930,8 @@ final class BravePlaylistTests: XCTestCase {
         defer { fixture.cleanup() }
 
         let stored = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Episode",
                     src: "https://cdn.example.com/retain.mp4",
                     pageSrc: "https://example.com/watch?v=retain",
@@ -903,7 +968,7 @@ final class BravePlaylistTests: XCTestCase {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
-        let persistentItem = PlaylistInfo(
+        let persistentItem = WebMediaInfo(
             name: "Saved Episode",
             src: "https://cdn.example.com/saved.m4a",
             pageSrc: "https://example.com/watch?v=saved",
@@ -914,7 +979,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "saved-1",
             isInvisible: false
         )
-        let transientItem = PlaylistInfo(
+        let transientItem = WebMediaInfo(
             name: "Temp Episode",
             src: "https://cdn.example.com/temp.m4a",
             pageSrc: "https://example.com/watch?v=temp",
@@ -927,7 +992,7 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let saved = try await fixture.store.download(
-            PlaylistResolvedMedia(
+            ResolvedWebMedia(
                 playlistInfo: persistentItem,
                 url: URL(string: persistentItem.src)!,
                 mimeType: "audio/mp4",
@@ -937,7 +1002,7 @@ final class BravePlaylistTests: XCTestCase {
             storageScope: .persistent
         )
         _ = try await fixture.store.download(
-            PlaylistResolvedMedia(
+            ResolvedWebMedia(
                 playlistInfo: transientItem,
                 url: URL(string: transientItem.src)!,
                 mimeType: "audio/mp4",
@@ -956,7 +1021,7 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(remainingMedia.count, 0)
     }
 
-    func testPlaylistLibraryResolvesAndDownloadsMediaIntoStore() async throws {
+    func testWebMediaLibraryResolvesAndDownloadsMediaIntoStore() async throws {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
@@ -970,11 +1035,11 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data())
         }
 
-        let library = PlaylistLibrary(
-            mediaStreamer: PlaylistMediaStreamer(urlSession: makeSession()),
+        let library = WebMediaLibrary(
+            mediaStreamer: WebMediaStreamer(urlSession: makeSession()),
             offlineStore: fixture.store
         )
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch?v=1",
@@ -1000,7 +1065,7 @@ final class BravePlaylistTests: XCTestCase {
         XCTAssertEqual(pageMedia.count, 1)
     }
 
-    func testPlaylistLibraryExposesBestStoredMediaAndRetentionUpdates() async throws {
+    func testWebMediaLibraryExposesBestStoredMediaAndRetentionUpdates() async throws {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
@@ -1014,12 +1079,12 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data())
         }
 
-        let library = PlaylistLibrary(
-            mediaStreamer: PlaylistMediaStreamer(urlSession: makeSession()),
+        let library = WebMediaLibrary(
+            mediaStreamer: WebMediaStreamer(urlSession: makeSession()),
             offlineStore: fixture.store
         )
         let pageURL = URL(string: "https://example.com/watch?v=library")!
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: pageURL.absoluteString,
@@ -1056,7 +1121,7 @@ final class BravePlaylistTests: XCTestCase {
                 .success(data: Data("finished".utf8), relativePath: "media.mp4", mimeType: "audio/mp4")
             ]
         )
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
@@ -1067,8 +1132,8 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let record = try await store.enqueueDownload(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Episode",
                     src: "https://cdn.example.com/cancel.mp4",
                     pageSrc: "https://example.com/watch?v=cancel",
@@ -1106,7 +1171,7 @@ final class BravePlaylistTests: XCTestCase {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Events",
             src: "https://cdn.example.com/events.mp4",
             pageSrc: "https://example.com/watch?v=events",
@@ -1119,8 +1184,8 @@ final class BravePlaylistTests: XCTestCase {
         )
         let identifier = makeStoredMediaIdentifier(for: item)
         let stream = await fixture.store.downloadEvents(id: identifier)
-        let collector = Task { () -> [PlaylistDownloadEventKind] in
-            var kinds: [PlaylistDownloadEventKind] = []
+        let collector = Task { () -> [WebMediaDownloadEventKind] in
+            var kinds: [WebMediaDownloadEventKind] = []
             for await event in stream {
                 kinds.append(event.kind)
                 if event.kind == .completed {
@@ -1131,7 +1196,7 @@ final class BravePlaylistTests: XCTestCase {
         }
 
         _ = try await fixture.store.download(
-            PlaylistResolvedMedia(
+            ResolvedWebMedia(
                 playlistInfo: item,
                 url: URL(string: "https://cdn.example.com/events.mp4")!,
                 mimeType: "video/mp4",
@@ -1156,8 +1221,8 @@ final class BravePlaylistTests: XCTestCase {
         let newPage = URL(string: "https://example.com/watch?v=new")!
 
         let pageBound = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Old page",
                     src: "https://cdn.example.com/old.mp4",
                     pageSrc: oldPage.absoluteString,
@@ -1178,8 +1243,8 @@ final class BravePlaylistTests: XCTestCase {
             thumbnail: .none
         )
         let nextPageBound = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "New page",
                     src: "https://cdn.example.com/new.mp4",
                     pageSrc: newPage.absoluteString,
@@ -1200,8 +1265,8 @@ final class BravePlaylistTests: XCTestCase {
             thumbnail: .none
         )
         let sessionBound = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Session",
                     src: "https://cdn.example.com/session.mp4",
                     pageSrc: newPage.absoluteString,
@@ -1222,8 +1287,8 @@ final class BravePlaylistTests: XCTestCase {
             thumbnail: .none
         )
         let manual = try await fixture.store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Manual",
                     src: "https://cdn.example.com/manual.mp4",
                     pageSrc: oldPage.absoluteString,
@@ -1274,13 +1339,13 @@ final class BravePlaylistTests: XCTestCase {
                 .success(relativePath: "media.movpkg", mimeType: "application/vnd.apple.mpegurl")
             ]
         )
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
                 excludeFromBackup: false
             ),
-            downloader: PlaylistAssetDownloader(
+            downloader: WebMediaAssetDownloader(
                 urlSession: makeSession(),
                 hlsDownloaderFactory: { hlsDownloader }
             ),
@@ -1288,8 +1353,8 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let record = try await store.enqueueDownload(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "HLS retry",
                     src: "https://cdn.example.com/retry.m3u8",
                     pageSrc: "https://example.com/watch?v=hls-retry",
@@ -1326,7 +1391,7 @@ final class BravePlaylistTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Episode",
             src: "https://cdn.example.com/audio.m4a",
             pageSrc: "https://example.com/watch?v=restore",
@@ -1337,7 +1402,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "episode-restore",
             isInvisible: false
         )
-        let resolvedMedia = PlaylistResolvedMedia(
+        let resolvedMedia = ResolvedWebMedia(
             playlistInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=restore")!,
             mimeType: "audio/mp4",
@@ -1376,7 +1441,7 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let downloader = MockArtifactDownloader()
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: transientRoot,
@@ -1402,7 +1467,7 @@ final class BravePlaylistTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
-        let item = PlaylistInfo(
+        let item = WebMediaInfo(
             name: "Resume",
             src: "https://cdn.example.com/resume.mp4",
             pageSrc: "https://example.com/watch?v=resume",
@@ -1413,7 +1478,7 @@ final class BravePlaylistTests: XCTestCase {
             tagId: "resume-item",
             isInvisible: false
         )
-        let resolvedMedia = PlaylistResolvedMedia(
+        let resolvedMedia = ResolvedWebMedia(
             playlistInfo: item,
             url: URL(string: "https://cdn.example.com/resume.mp4")!,
             mimeType: "video/mp4",
@@ -1465,13 +1530,13 @@ final class BravePlaylistTests: XCTestCase {
             return (response, Data("world".utf8))
         }
 
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: transientRoot,
                 excludeFromBackup: false
             ),
-            downloader: PlaylistAssetDownloader(urlSession: makeSession()),
+            downloader: WebMediaAssetDownloader(urlSession: makeSession()),
             urlSession: makeSession()
         )
 
@@ -1483,13 +1548,13 @@ final class BravePlaylistTests: XCTestCase {
         )
     }
 
-    func testTransientStoragePolicyEvictsOldestTransientMedia() async throws {
+    func testTransientStoragePolicyExemptsCurrentPageBeforeEvictingOldestTransientMedia() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let downloader = MockArtifactDownloader()
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
@@ -1501,8 +1566,8 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let first = try await store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "First",
                     src: "https://cdn.example.com/first.mp4",
                     pageSrc: "https://example.com/watch?v=1",
@@ -1523,8 +1588,8 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let second = try await store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "Second",
                     src: "https://cdn.example.com/second.mp4",
                     pageSrc: "https://example.com/watch?v=2",
@@ -1544,8 +1609,16 @@ final class BravePlaylistTests: XCTestCase {
             thumbnail: .none
         )
 
-        let allTransient = try await store.allStoredMedia(scope: .transient)
-        XCTAssertEqual(allTransient.map(\.id), [second.id])
+        let allTransientBeforeTrim = try await store.allStoredMedia(scope: .transient)
+        XCTAssertEqual(Set(allTransientBeforeTrim.map(\.id)), Set([first.id, second.id]))
+
+        try await store.enforceTransientStoragePolicy(exceptPageURLs: [URL(string: "https://example.com/watch?v=2")!])
+        let allTransientWithCurrentPageExempt = try await store.allStoredMedia(scope: .transient)
+        XCTAssertEqual(Set(allTransientWithCurrentPageExempt.map(\.id)), Set([first.id, second.id]))
+
+        try await store.enforceTransientStoragePolicy()
+        let allTransientAfterTrim = try await store.allStoredMedia(scope: .transient)
+        XCTAssertEqual(allTransientAfterTrim.map(\.id), [second.id])
         XCTAssertFalse(FileManager.default.fileExists(atPath: first.localMediaURL.path))
     }
 
@@ -1555,13 +1628,13 @@ final class BravePlaylistTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let hlsDownloader = MockHLSAssetDownloader()
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
                 excludeFromBackup: false
             ),
-            downloader: PlaylistAssetDownloader(
+            downloader: WebMediaAssetDownloader(
                 urlSession: makeSession(),
                 hlsDownloaderFactory: { hlsDownloader }
             ),
@@ -1569,8 +1642,8 @@ final class BravePlaylistTests: XCTestCase {
         )
 
         let storedMedia = try await store.download(
-            PlaylistResolvedMedia(
-                playlistInfo: PlaylistInfo(
+            ResolvedWebMedia(
+                playlistInfo: WebMediaInfo(
                     name: "HLS Episode",
                     src: "https://cdn.example.com/master.m3u8",
                     pageSrc: "https://example.com/watch?v=hls",
@@ -1605,7 +1678,7 @@ final class BravePlaylistTests: XCTestCase {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let downloader = MockArtifactDownloader()
-        let store = PlaylistOfflineMediaStore(
+        let store = WebMediaOfflineStore(
             configuration: .init(
                 persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
                 transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
@@ -1618,27 +1691,27 @@ final class BravePlaylistTests: XCTestCase {
     }
 }
 
-private final class MockLoaderFactory: PlaylistWebLoaderFactory {
+private final class MockLoaderFactory: WebMediaLoaderFactory {
     let loader: MockWebLoader
 
-    init(item: PlaylistInfo) {
+    init(item: WebMediaInfo) {
         self.loader = MockWebLoader(item: item)
     }
 
-    func makeWebLoader() -> any PlaylistWebLoader {
+    func makeWebLoader() -> any WebMediaLoader {
         loader
     }
 }
 
-private final class MockWebLoader: PlaylistWebLoader {
-    private let item: PlaylistInfo
+private final class MockWebLoader: WebMediaLoader {
+    private let item: WebMediaInfo
     private(set) var stopCallCount = 0
 
-    init(item: PlaylistInfo) {
+    init(item: WebMediaInfo) {
         self.item = item
     }
 
-    func load(url: URL) async -> PlaylistInfo? {
+    func load(url: URL) async -> WebMediaInfo? {
         item
     }
 
@@ -1648,7 +1721,7 @@ private final class MockWebLoader: PlaylistWebLoader {
 }
 
 private final class URLProtocolStub: URLProtocol {
-    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -1679,7 +1752,7 @@ private final class URLProtocolStub: URLProtocol {
 
 private struct OfflineStoreFixture {
     let rootURL: URL
-    let store: PlaylistOfflineMediaStore
+    let store: WebMediaOfflineStore
     let downloader: MockArtifactDownloader
 
     func cleanup() {
@@ -1687,15 +1760,15 @@ private struct OfflineStoreFixture {
     }
 }
 
-private final class MockArtifactDownloader: PlaylistArtifactDownloading {
+private final class MockArtifactDownloader: WebMediaArtifactDownloading, @unchecked Sendable {
     private(set) var downloadCallCount = 0
 
     func download(
-        media: PlaylistResolvedMedia,
+        media: ResolvedWebMedia,
         into directory: URL,
         identifier: String,
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void
-    ) async throws -> PlaylistDownloadedArtifact {
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
         downloadCallCount += 1
 
         let payload = Data("media-\(downloadCallCount)".utf8)
@@ -1704,7 +1777,7 @@ private final class MockArtifactDownloader: PlaylistArtifactDownloading {
         try payload.write(to: destinationURL, options: .atomic)
 
         onProgress(
-            PlaylistDownloadProgress(
+            WebMediaDownloadProgress(
                 id: identifier,
                 fractionCompleted: 1,
                 bytesDownloaded: Int64(payload.count),
@@ -1712,7 +1785,7 @@ private final class MockArtifactDownloader: PlaylistArtifactDownloading {
             )
         )
 
-        return PlaylistDownloadedArtifact(
+        return DownloadedWebMediaArtifact(
             relativeMediaPath: relativePath,
             mimeType: media.mimeType,
             byteCount: Int64(payload.count)
@@ -1720,9 +1793,9 @@ private final class MockArtifactDownloader: PlaylistArtifactDownloading {
     }
 }
 
-private final class SequencedArtifactDownloader: PlaylistArtifactDownloading {
+private final class SequencedArtifactDownloader: WebMediaArtifactDownloading, @unchecked Sendable {
     enum Step {
-        case block(progress: PlaylistDownloadProgress)
+        case block(progress: WebMediaDownloadProgress)
         case success(data: Data, relativePath: String, mimeType: String?)
     }
 
@@ -1734,11 +1807,11 @@ private final class SequencedArtifactDownloader: PlaylistArtifactDownloading {
     }
 
     func download(
-        media: PlaylistResolvedMedia,
+        media: ResolvedWebMedia,
         into directory: URL,
         identifier: String,
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void
-    ) async throws -> PlaylistDownloadedArtifact {
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
         let step: Step = lock.withLock {
             precondition(steps.isEmpty == false)
             return steps.removeFirst()
@@ -1747,7 +1820,7 @@ private final class SequencedArtifactDownloader: PlaylistArtifactDownloading {
         switch step {
         case .block(let progress):
             onProgress(
-                PlaylistDownloadProgress(
+                WebMediaDownloadProgress(
                     id: identifier,
                     fractionCompleted: progress.fractionCompleted,
                     bytesDownloaded: progress.bytesDownloaded,
@@ -1761,14 +1834,14 @@ private final class SequencedArtifactDownloader: PlaylistArtifactDownloading {
             let destinationURL = directory.appendingPathComponent(relativePath, isDirectory: false)
             try data.write(to: destinationURL, options: .atomic)
             onProgress(
-                PlaylistDownloadProgress(
+                WebMediaDownloadProgress(
                     id: identifier,
                     fractionCompleted: 1,
                     bytesDownloaded: Int64(data.count),
                     totalBytesExpected: Int64(data.count)
                 )
             )
-            return PlaylistDownloadedArtifact(
+            return DownloadedWebMediaArtifact(
                 relativeMediaPath: relativePath,
                 mimeType: mimeType ?? media.mimeType,
                 byteCount: Int64(data.count)
@@ -1777,9 +1850,9 @@ private final class SequencedArtifactDownloader: PlaylistArtifactDownloading {
     }
 }
 
-private final class SequencedHLSAssetDownloader: PlaylistHLSAssetDownloading {
+private final class SequencedHLSAssetDownloader: WebMediaHLSAssetDownloading, @unchecked Sendable {
     enum Step {
-        case block(progress: PlaylistDownloadProgress)
+        case block(progress: WebMediaDownloadProgress)
         case success(relativePath: String, mimeType: String?)
     }
 
@@ -1791,11 +1864,11 @@ private final class SequencedHLSAssetDownloader: PlaylistHLSAssetDownloading {
     }
 
     func download(
-        media: PlaylistResolvedMedia,
+        media: ResolvedWebMedia,
         into directory: URL,
         identifier: String,
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void
-    ) async throws -> PlaylistDownloadedArtifact {
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
         let step: Step = lock.withLock {
             precondition(steps.isEmpty == false)
             return steps.removeFirst()
@@ -1804,7 +1877,7 @@ private final class SequencedHLSAssetDownloader: PlaylistHLSAssetDownloading {
         switch step {
         case .block(let progress):
             onProgress(
-                PlaylistDownloadProgress(
+                WebMediaDownloadProgress(
                     id: identifier,
                     fractionCompleted: progress.fractionCompleted,
                     bytesDownloaded: progress.bytesDownloaded,
@@ -1819,14 +1892,14 @@ private final class SequencedHLSAssetDownloader: PlaylistHLSAssetDownloading {
             try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
             try Data("segment".utf8).write(to: packageDirectory.appendingPathComponent("segment.ts"))
             onProgress(
-                PlaylistDownloadProgress(
+                WebMediaDownloadProgress(
                     id: identifier,
                     fractionCompleted: 1,
                     bytesDownloaded: 7,
                     totalBytesExpected: 7
                 )
             )
-            return PlaylistDownloadedArtifact(
+            return DownloadedWebMediaArtifact(
                 relativeMediaPath: relativePath,
                 mimeType: mimeType ?? media.mimeType,
                 byteCount: 7
@@ -1835,16 +1908,16 @@ private final class SequencedHLSAssetDownloader: PlaylistHLSAssetDownloading {
     }
 }
 
-private final class MockHLSAssetDownloader: PlaylistHLSAssetDownloading {
+private final class MockHLSAssetDownloader: WebMediaHLSAssetDownloading, @unchecked Sendable {
     private(set) var didDownload = false
     private(set) var lastIdentifier: String?
 
     func download(
-        media: PlaylistResolvedMedia,
+        media: ResolvedWebMedia,
         into directory: URL,
         identifier: String,
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void
-    ) async throws -> PlaylistDownloadedArtifact {
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
         didDownload = true
         lastIdentifier = identifier
         let packageDirectory = directory.appendingPathComponent("media.movpkg", isDirectory: true)
@@ -1852,14 +1925,14 @@ private final class MockHLSAssetDownloader: PlaylistHLSAssetDownloading {
         let segmentURL = packageDirectory.appendingPathComponent("segment.ts", isDirectory: false)
         try Data("segment".utf8).write(to: segmentURL)
         onProgress(
-            PlaylistDownloadProgress(
+            WebMediaDownloadProgress(
                 id: identifier,
                 fractionCompleted: 1,
                 bytesDownloaded: 7,
                 totalBytesExpected: 7
             )
         )
-        return PlaylistDownloadedArtifact(
+        return DownloadedWebMediaArtifact(
             relativeMediaPath: "media.movpkg",
             mimeType: media.mimeType,
             byteCount: 7
@@ -1869,23 +1942,23 @@ private final class MockHLSAssetDownloader: PlaylistHLSAssetDownloading {
 
 private struct PendingMetadataFixture: Codable {
     let id: String
-    let playlistInfo: PlaylistInfo
-    let storageScope: PlaylistOfflineStorageScope
-    let retentionPolicy: PlaylistRetentionPolicy
-    let resolvedMedia: PlaylistResolvedMediaSnapshot
-    let state: PlaylistDownloadState
+    let playlistInfo: WebMediaInfo
+    let storageScope: WebMediaOfflineStorageScope
+    let retentionPolicy: WebMediaRetentionPolicy
+    let resolvedMedia: ResolvedWebMediaSnapshot
+    let state: WebMediaDownloadState
     let createdAt: Date
     let updatedAt: Date
     let downloadedAt: Date?
-    let progress: PlaylistDownloadProgress?
+    let progress: WebMediaDownloadProgress?
     let failureDescription: String?
     let mediaRelativePath: String?
     let thumbnailRelativePath: String?
     let byteCount: Int64?
-    let thumbnailRequest: PlaylistThumbnailRequest
+    let thumbnailRequest: WebMediaThumbnailRequest
 }
 
-private func makeStoredMediaIdentifier(for item: PlaylistInfo) -> String {
+private func makeStoredMediaIdentifier(for item: WebMediaInfo) -> String {
     let digest = SHA256.hash(data: Data(item.candidateLookupKey.utf8))
     return digest.compactMap { String(format: "%02x", $0) }.joined()
 }

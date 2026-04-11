@@ -1,15 +1,15 @@
 import Foundation
 
-public protocol PlaylistWebLoaderFactory {
-    func makeWebLoader() -> any PlaylistWebLoader
+public protocol WebMediaLoaderFactory {
+    func makeWebLoader() -> any WebMediaLoader
 }
 
-public protocol PlaylistWebLoader: AnyObject {
-    func load(url: URL) async -> PlaylistInfo?
+public protocol WebMediaLoader: AnyObject {
+    func load(url: URL) async -> WebMediaInfo?
     func stop()
 }
 
-public struct PlaylistMediaRequestContext: Hashable, Sendable {
+public struct WebMediaRequestContext: Hashable, Sendable {
     public let headers: [String: String]
 
     public init(
@@ -32,24 +32,24 @@ public struct PlaylistMediaRequestContext: Hashable, Sendable {
     }
 }
 
-public enum PlaylistMediaResolutionMethod: String, Hashable, Codable, Sendable {
+public enum WebMediaResolutionMethod: String, Hashable, Codable, Sendable {
     case direct
     case fallback
 }
 
-public struct PlaylistResolvedMedia: Hashable, Sendable {
-    public let playlistInfo: PlaylistInfo
+public struct ResolvedWebMedia: Hashable, Sendable {
+    public let playlistInfo: WebMediaInfo
     public let url: URL
     public let mimeType: String?
     public let requestHeaders: [String: String]
-    public let resolutionMethod: PlaylistMediaResolutionMethod
+    public let resolutionMethod: WebMediaResolutionMethod
 
     public init(
-        playlistInfo: PlaylistInfo,
+        playlistInfo: WebMediaInfo,
         url: URL,
         mimeType: String?,
         requestHeaders: [String: String] = [:],
-        resolutionMethod: PlaylistMediaResolutionMethod
+        resolutionMethod: WebMediaResolutionMethod
     ) {
         self.playlistInfo = playlistInfo
         self.url = url
@@ -59,7 +59,7 @@ public struct PlaylistResolvedMedia: Hashable, Sendable {
     }
 }
 
-public final class PlaylistMediaStreamer {
+public final class WebMediaStreamer: @unchecked Sendable {
     public enum PlaybackError: Error, Equatable {
         case unsupportedSource
         case couldNotDeterminePlayableMedia
@@ -68,20 +68,20 @@ public final class PlaylistMediaStreamer {
     }
 
     private let urlSession: URLSession
-    private let webLoaderFactory: (any PlaylistWebLoaderFactory)?
+    private let webLoaderFactory: (any WebMediaLoaderFactory)?
 
     public init(
         urlSession: URLSession = .shared,
-        webLoaderFactory: (any PlaylistWebLoaderFactory)? = nil
+        webLoaderFactory: (any WebMediaLoaderFactory)? = nil
     ) {
         self.urlSession = urlSession
         self.webLoaderFactory = webLoaderFactory
     }
 
     public func resolveMedia(
-        _ item: PlaylistInfo,
-        requestContext: PlaylistMediaRequestContext = .init()
-    ) async throws -> PlaylistResolvedMedia {
+        _ item: WebMediaInfo,
+        requestContext: WebMediaRequestContext = .init()
+    ) async throws -> ResolvedWebMedia {
         guard item.sourceURL != nil else {
             throw PlaybackError.unsupportedSource
         }
@@ -103,7 +103,7 @@ public final class PlaylistMediaStreamer {
 
     public static func getMimeType(
         _ url: URL,
-        requestContext: PlaylistMediaRequestContext = .init(),
+        requestContext: WebMediaRequestContext = .init(),
         using session: URLSession = .shared
     ) async -> String? {
         switch url.scheme?.lowercased() {
@@ -137,9 +137,9 @@ public final class PlaylistMediaStreamer {
     }
 
     private func resolveViaFallback(
-        _ item: PlaylistInfo,
-        requestContext: PlaylistMediaRequestContext
-    ) async throws -> PlaylistResolvedMedia {
+        _ item: WebMediaInfo,
+        requestContext: WebMediaRequestContext
+    ) async throws -> ResolvedWebMedia {
         guard let pageURL = item.pageURL,
               let webLoaderFactory
         else {
@@ -163,10 +163,10 @@ public final class PlaylistMediaStreamer {
     }
 
     private func resolveDirectMedia(
-        _ item: PlaylistInfo,
-        requestContext: PlaylistMediaRequestContext,
-        method: PlaylistMediaResolutionMethod
-    ) async -> PlaylistResolvedMedia? {
+        _ item: WebMediaInfo,
+        requestContext: WebMediaRequestContext,
+        method: WebMediaResolutionMethod
+    ) async -> ResolvedWebMedia? {
         guard let url = item.sourceURL,
               item.isBlobSource == false,
               item.isDataSource == false
@@ -181,7 +181,7 @@ public final class PlaylistMediaStreamer {
             return nil
         }
 
-        return PlaylistResolvedMedia(
+        return ResolvedWebMedia(
             playlistInfo: item,
             url: url,
             mimeType: mimeType,
@@ -204,7 +204,7 @@ public final class PlaylistMediaStreamer {
     private static func makeProbeRequest(
         url: URL,
         method: String,
-        requestContext: PlaylistMediaRequestContext,
+        requestContext: WebMediaRequestContext,
         range: String? = nil
     ) -> URLRequest {
         var request = URLRequest(

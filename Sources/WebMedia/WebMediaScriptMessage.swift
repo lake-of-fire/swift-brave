@@ -1,6 +1,6 @@
 import Foundation
 
-public struct PlaylistReadyState: Codable, Hashable, Sendable {
+public struct WebMediaReadyState: Codable, Hashable, Sendable {
     public let state: String
 
     public init(state: String) {
@@ -11,7 +11,7 @@ public struct PlaylistReadyState: Codable, Hashable, Sendable {
         state == "cancel"
     }
 
-    public static func decode(from body: Any) -> PlaylistReadyState? {
+    public static func decode(from body: Any) -> WebMediaReadyState? {
         guard JSONSerialization.isValidJSONObject(body),
               let data = try? JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
         else {
@@ -21,7 +21,7 @@ public struct PlaylistReadyState: Codable, Hashable, Sendable {
     }
 }
 
-public enum PlaylistPlaybackEventName: String, Codable, CaseIterable, Sendable {
+public enum WebMediaPlaybackEventName: String, Codable, CaseIterable, Sendable {
     case play
     case pause
     case seeking
@@ -43,7 +43,7 @@ public enum PlaylistPlaybackEventName: String, Codable, CaseIterable, Sendable {
     case heartbeat
 }
 
-public enum PlaylistPlaybackPresentationMode: String, Codable, CaseIterable, Sendable {
+public enum WebMediaPlaybackPresentationMode: String, Codable, CaseIterable, Sendable {
     case inline
     case fullscreen
     case pictureInPicture
@@ -63,14 +63,14 @@ public enum PlaylistPlaybackPresentationMode: String, Codable, CaseIterable, Sen
     }
 }
 
-public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
+public struct WebMediaPlaybackSnapshot: Codable, Hashable, Sendable {
     public let tagId: String
     public let pageSrc: String
     public let pageTitle: String
     public let src: String
     public let currentSrc: String
     public let mimeType: String
-    public let mediaType: PlaylistMediaKind
+    public let mediaType: WebMediaKind
     public let currentTime: TimeInterval
     public let duration: TimeInterval
     public let paused: Bool
@@ -80,7 +80,7 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
     public let volume: Double
     public let readyState: Int
     public let networkState: Int
-    public let presentationMode: PlaylistPlaybackPresentationMode
+    public let presentationMode: WebMediaPlaybackPresentationMode
     public let isInvisible: Bool
 
     public var effectiveSource: String {
@@ -88,7 +88,7 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
     }
 
     public var pageLookupKey: String {
-        PlaylistInfo.pageLookupKey(for: pageSrc)
+        WebMediaInfo.pageLookupKey(for: pageSrc)
     }
 
     public init(
@@ -98,7 +98,7 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
         src: String,
         currentSrc: String,
         mimeType: String,
-        mediaType: PlaylistMediaKind,
+        mediaType: WebMediaKind,
         currentTime: TimeInterval,
         duration: TimeInterval,
         paused: Bool,
@@ -108,14 +108,14 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
         volume: Double,
         readyState: Int,
         networkState: Int,
-        presentationMode: PlaylistPlaybackPresentationMode,
+        presentationMode: WebMediaPlaybackPresentationMode,
         isInvisible: Bool
     ) {
         self.tagId = tagId
         self.pageSrc = pageSrc
         self.pageTitle = pageTitle
-        self.src = PlaylistInfo.fixSchemelessURLs(src: src, pageSrc: pageSrc)
-        self.currentSrc = PlaylistInfo.fixSchemelessURLs(src: currentSrc, pageSrc: pageSrc)
+        self.src = WebMediaInfo.fixSchemelessURLs(src: src, pageSrc: pageSrc)
+        self.currentSrc = WebMediaInfo.fixSchemelessURLs(src: currentSrc, pageSrc: pageSrc)
         self.mimeType = mimeType
         self.mediaType = mediaType
         self.currentTime = currentTime
@@ -136,10 +136,10 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
         let pageSrc = try container.decode(String.self, forKey: .pageSrc)
         let src = try container.decodeIfPresent(String.self, forKey: .src) ?? ""
         let currentSrc = try container.decodeIfPresent(String.self, forKey: .currentSrc) ?? ""
-        let mediaType = PlaylistMediaKind(
+        let mediaType = WebMediaKind(
             rawValue: try container.decodeIfPresent(String.self, forKey: .mediaType) ?? ""
         ) ?? .unknown
-        let presentationMode = PlaylistPlaybackPresentationMode(
+        let presentationMode = WebMediaPlaybackPresentationMode(
             rawPresentationMode: try container.decodeIfPresent(String.self, forKey: .presentationMode)
         )
 
@@ -165,7 +165,7 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
         )
     }
 
-    public static func decode(from body: Any) -> PlaylistPlaybackSnapshot? {
+    public static func decode(from body: Any) -> WebMediaPlaybackSnapshot? {
         guard JSONSerialization.isValidJSONObject(body),
               let data = try? JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
         else {
@@ -175,13 +175,13 @@ public struct PlaylistPlaybackSnapshot: Codable, Hashable, Sendable {
     }
 }
 
-public struct PlaylistPlaybackEvent: Codable, Hashable, Sendable {
-    public let eventName: PlaylistPlaybackEventName
-    public let snapshot: PlaylistPlaybackSnapshot
+public struct WebMediaPlaybackEvent: Codable, Hashable, Sendable {
+    public let eventName: WebMediaPlaybackEventName
+    public let snapshot: WebMediaPlaybackSnapshot
 
     public init(
-        eventName: PlaylistPlaybackEventName,
-        snapshot: PlaylistPlaybackSnapshot
+        eventName: WebMediaPlaybackEventName,
+        snapshot: WebMediaPlaybackSnapshot
     ) {
         self.eventName = eventName
         self.snapshot = snapshot
@@ -189,11 +189,11 @@ public struct PlaylistPlaybackEvent: Codable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.eventName = try container.decode(PlaylistPlaybackEventName.self, forKey: .eventName)
-        self.snapshot = try PlaylistPlaybackSnapshot(from: decoder)
+        self.eventName = try container.decode(WebMediaPlaybackEventName.self, forKey: .eventName)
+        self.snapshot = try WebMediaPlaybackSnapshot(from: decoder)
     }
 
-    public static func decode(from body: Any) -> PlaylistPlaybackEvent? {
+    public static func decode(from body: Any) -> WebMediaPlaybackEvent? {
         guard JSONSerialization.isValidJSONObject(body),
               let data = try? JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
         else {
@@ -203,17 +203,17 @@ public struct PlaylistPlaybackEvent: Codable, Hashable, Sendable {
     }
 }
 
-public enum PlaylistScriptMessage: Hashable, Sendable {
-    case readyState(PlaylistReadyState)
-    case media(PlaylistInfo)
-    case playback(PlaylistPlaybackEvent)
+public enum WebMediaScriptMessage: Hashable, Sendable {
+    case readyState(WebMediaReadyState)
+    case media(WebMediaInfo)
+    case playback(WebMediaPlaybackEvent)
 }
 
-public enum PlaylistScriptMessageDecoder {
+public enum WebMediaScriptMessageDecoder {
     public static func decode(
         body: Any,
         expectingSecurityToken securityToken: String? = nil
-    ) -> PlaylistScriptMessage? {
+    ) -> WebMediaScriptMessage? {
         guard let payload = body as? [String: Any] else {
             return nil
         }
@@ -224,16 +224,16 @@ public enum PlaylistScriptMessageDecoder {
         }
 
         if payload["state"] != nil,
-           let readyState = PlaylistReadyState.decode(from: payload) {
+           let readyState = WebMediaReadyState.decode(from: payload) {
             return .readyState(readyState)
         }
 
         if payload["messageKind"] as? String == "playback",
-           let playbackEvent = PlaylistPlaybackEvent.decode(from: payload) {
+           let playbackEvent = WebMediaPlaybackEvent.decode(from: payload) {
             return .playback(playbackEvent)
         }
 
-        if let info = PlaylistInfo.decode(from: payload) {
+        if let info = WebMediaInfo.decode(from: payload) {
             return .media(info)
         }
 

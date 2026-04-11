@@ -1,25 +1,32 @@
 import Foundation
 
-public actor PlaylistLibrary {
-    private let mediaStreamer: PlaylistMediaStreamer
-    private let offlineStore: PlaylistOfflineMediaStore
+public actor WebMediaLibrary {
+    private let mediaStreamer: WebMediaStreamer
+    private let offlineStore: WebMediaOfflineStore
 
     public init(
-        mediaStreamer: PlaylistMediaStreamer = PlaylistMediaStreamer(),
-        offlineStore: PlaylistOfflineMediaStore = PlaylistOfflineMediaStore()
+        mediaStreamer: WebMediaStreamer = WebMediaStreamer(),
+        offlineStore: WebMediaOfflineStore = WebMediaOfflineStore()
     ) {
         self.mediaStreamer = mediaStreamer
         self.offlineStore = offlineStore
     }
 
+    public func resolve(
+        _ item: WebMediaInfo,
+        requestContext: WebMediaRequestContext = .init()
+    ) async throws -> ResolvedWebMedia {
+        try await mediaStreamer.resolveMedia(item, requestContext: requestContext)
+    }
+
     public func download(
-        _ item: PlaylistInfo,
-        requestContext: PlaylistMediaRequestContext = .init(),
-        storageScope: PlaylistOfflineStorageScope,
-        retentionPolicy: PlaylistRetentionPolicy? = nil,
-        thumbnail: PlaylistThumbnailRequest = .automatic(),
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void = { _ in }
-    ) async throws -> PlaylistStoredMedia {
+        _ item: WebMediaInfo,
+        requestContext: WebMediaRequestContext = .init(),
+        storageScope: WebMediaOfflineStorageScope,
+        retentionPolicy: WebMediaRetentionPolicy? = nil,
+        thumbnail: WebMediaThumbnailRequest = .automatic(),
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void = { _ in }
+    ) async throws -> StoredWebMedia {
         let resolvedMedia = try await mediaStreamer.resolveMedia(item, requestContext: requestContext)
         return try await offlineStore.download(
             resolvedMedia,
@@ -31,13 +38,13 @@ public actor PlaylistLibrary {
     }
 
     public func enqueueDownload(
-        _ item: PlaylistInfo,
-        requestContext: PlaylistMediaRequestContext = .init(),
-        storageScope: PlaylistOfflineStorageScope,
-        retentionPolicy: PlaylistRetentionPolicy? = nil,
-        thumbnail: PlaylistThumbnailRequest = .automatic(),
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void = { _ in }
-    ) async throws -> PlaylistDownloadRecord {
+        _ item: WebMediaInfo,
+        requestContext: WebMediaRequestContext = .init(),
+        storageScope: WebMediaOfflineStorageScope,
+        retentionPolicy: WebMediaRetentionPolicy? = nil,
+        thumbnail: WebMediaThumbnailRequest = .automatic(),
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void = { _ in }
+    ) async throws -> WebMediaDownloadRecord {
         let resolvedMedia = try await mediaStreamer.resolveMedia(item, requestContext: requestContext)
         return try await offlineStore.enqueueDownload(
             resolvedMedia,
@@ -48,17 +55,17 @@ public actor PlaylistLibrary {
         )
     }
 
-    public func waitForDownload(id: String) async throws -> PlaylistStoredMedia {
+    public func waitForDownload(id: String) async throws -> StoredWebMedia {
         try await offlineStore.waitForDownload(id: id)
     }
 
-    public func downloadEvents(id: String? = nil) async -> AsyncStream<PlaylistDownloadEvent> {
+    public func downloadEvents(id: String? = nil) async -> AsyncStream<WebMediaDownloadEvent> {
         await offlineStore.downloadEvents(id: id)
     }
 
     public func restorePendingDownloads(
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void = { _ in }
-    ) async throws -> [PlaylistDownloadRecord] {
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void = { _ in }
+    ) async throws -> [WebMediaDownloadRecord] {
         try await offlineStore.restorePendingDownloads(onProgress: onProgress)
     }
 
@@ -66,68 +73,68 @@ public actor PlaylistLibrary {
         try await offlineStore.isDownloading(id: id)
     }
 
-    public func cancelDownload(id: String) async throws -> PlaylistDownloadRecord? {
+    public func cancelDownload(id: String) async throws -> WebMediaDownloadRecord? {
         try await offlineStore.cancelDownload(id: id)
     }
 
     public func retryDownload(
         id: String,
-        onProgress: @escaping @Sendable (PlaylistDownloadProgress) -> Void = { _ in }
-    ) async throws -> PlaylistDownloadRecord {
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void = { _ in }
+    ) async throws -> WebMediaDownloadRecord {
         try await offlineStore.retryDownload(id: id, onProgress: onProgress)
     }
 
-    public func downloadRecord(for item: PlaylistInfo) async throws -> PlaylistDownloadRecord? {
+    public func downloadRecord(for item: WebMediaInfo) async throws -> WebMediaDownloadRecord? {
         try await offlineStore.downloadRecord(for: item)
     }
 
-    public func currentDownloadRecord(id: String) async throws -> PlaylistDownloadRecord? {
+    public func currentDownloadRecord(id: String) async throws -> WebMediaDownloadRecord? {
         try await offlineStore.currentDownloadRecord(id: id)
     }
 
     public func allDownloadRecords(
-        states: Set<PlaylistDownloadState>? = nil
-    ) async throws -> [PlaylistDownloadRecord] {
+        states: Set<WebMediaDownloadState>? = nil
+    ) async throws -> [WebMediaDownloadRecord] {
         try await offlineStore.allDownloadRecords(states: states)
     }
 
-    public func storedMedia(for item: PlaylistInfo) async throws -> PlaylistStoredMedia? {
+    public func storedMedia(for item: WebMediaInfo) async throws -> StoredWebMedia? {
         try await offlineStore.storedMedia(for: item)
     }
 
-    public func storedMedia(forPageURL pageURL: URL) async throws -> [PlaylistStoredMedia] {
+    public func storedMedia(forPageURL pageURL: URL) async throws -> [StoredWebMedia] {
         try await offlineStore.storedMedia(forPageURL: pageURL)
     }
 
-    public func bestStoredMedia(forPageURL pageURL: URL) async throws -> PlaylistStoredMedia? {
+    public func bestStoredMedia(forPageURL pageURL: URL) async throws -> StoredWebMedia? {
         try await offlineStore.bestStoredMedia(forPageURL: pageURL)
     }
 
-    public func storedMedia(id: String) async throws -> PlaylistStoredMedia? {
+    public func storedMedia(id: String) async throws -> StoredWebMedia? {
         try await offlineStore.storedMedia(id: id)
     }
 
-    public func ensureThumbnail(id: String) async throws -> PlaylistStoredMedia? {
+    public func ensureThumbnail(id: String) async throws -> StoredWebMedia? {
         try await offlineStore.ensureThumbnail(id: id)
     }
 
-    public func allStoredMedia(scope: PlaylistOfflineStorageScope? = nil) async throws -> [PlaylistStoredMedia] {
+    public func allStoredMedia(scope: WebMediaOfflineStorageScope? = nil) async throws -> [StoredWebMedia] {
         try await offlineStore.allStoredMedia(scope: scope)
     }
 
     @discardableResult
     public func updateStorageScope(
-        _ storageScope: PlaylistOfflineStorageScope,
+        _ storageScope: WebMediaOfflineStorageScope,
         for id: String
-    ) async throws -> PlaylistStoredMedia {
+    ) async throws -> StoredWebMedia {
         try await offlineStore.updateStorageScope(storageScope, for: id)
     }
 
     @discardableResult
     public func updateRetentionPolicy(
-        _ retentionPolicy: PlaylistRetentionPolicy,
+        _ retentionPolicy: WebMediaRetentionPolicy,
         for id: String
-    ) async throws -> PlaylistDownloadRecord {
+    ) async throws -> WebMediaDownloadRecord {
         try await offlineStore.updateRetentionPolicy(retentionPolicy, for: id)
     }
 
@@ -135,7 +142,7 @@ public actor PlaylistLibrary {
         try await offlineStore.deleteStoredMedia(id: id)
     }
 
-    public func deleteAllStoredMedia(scope: PlaylistOfflineStorageScope? = nil) async throws {
+    public func deleteAllStoredMedia(scope: WebMediaOfflineStorageScope? = nil) async throws {
         try await offlineStore.deleteAllStoredMedia(scope: scope)
     }
 
@@ -168,7 +175,7 @@ public actor PlaylistLibrary {
     }
 
     @discardableResult
-    public func touchStoredMedia(id: String) async throws -> PlaylistStoredMedia? {
+    public func touchStoredMedia(id: String) async throws -> StoredWebMedia? {
         try await offlineStore.touchStoredMedia(id: id)
     }
 }

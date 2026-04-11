@@ -1,24 +1,24 @@
 import Foundation
 
-public enum PlaylistMediaKind: String, Codable, CaseIterable, Sendable {
+public enum WebMediaKind: String, Codable, CaseIterable, Sendable {
     case video
     case audio
     case unknown
 }
 
-public enum PlaylistContainerKind: String, Codable, CaseIterable, Sendable {
+public enum WebMediaContainerKind: String, Codable, CaseIterable, Sendable {
     case hls
     case file
     case unknown
 }
 
-public enum PlaylistPlaybackKind: String, Codable, CaseIterable, Sendable {
+public enum WebMediaPlaybackKind: String, Codable, CaseIterable, Sendable {
     case audioOnly
     case video
     case unknown
 }
 
-public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
+public struct WebMediaInfo: Codable, Hashable, Identifiable, Sendable {
     public var name: String
     public var src: String
     public var pageSrc: String
@@ -70,7 +70,7 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 
-    public var containerKind: PlaylistContainerKind {
+    public var containerKind: WebMediaContainerKind {
         if Self.hlsMimeTypes.contains(normalizedMimeType ?? "")
             || sourceURL?.pathExtension.lowercased() == "m3u8" {
             return .hls
@@ -84,7 +84,7 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         }
     }
 
-    public var kind: PlaylistMediaKind {
+    public var kind: WebMediaKind {
         let normalizedMimeType = self.normalizedMimeType ?? ""
         if normalizedMimeType.hasPrefix("audio/") || normalizedMimeType == "audio" {
             return .audio
@@ -108,7 +108,7 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         }
     }
 
-    public var playbackKind: PlaylistPlaybackKind {
+    public var playbackKind: WebMediaPlaybackKind {
         switch kind {
         case .audio:
             return .audioOnly
@@ -214,7 +214,7 @@ public struct PlaylistInfo: Codable, Hashable, Identifiable, Sendable {
         self.isInvisible = try container.decodeIfPresent(Bool.self, forKey: .isInvisible) ?? false
     }
 
-    public static func decode(from body: Any) -> PlaylistInfo? {
+    public static func decode(from body: Any) -> WebMediaInfo? {
         guard JSONSerialization.isValidJSONObject(body),
               let data = try? JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
         else {

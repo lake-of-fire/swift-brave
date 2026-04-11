@@ -6,7 +6,7 @@ let package = Package(
     platforms: [
         .iOS(.v15),
         .macCatalyst(.v15),
-        .macOS(.v26)
+        .macOS(.v15)
     ],
     products: [
         .library(
@@ -14,8 +14,8 @@ let package = Package(
             targets: ["BraveAdblock"]
         ),
         .library(
-            name: "BravePlaylist",
-            targets: ["BravePlaylist"]
+            name: "WebMedia",
+            targets: ["WebMedia"]
         )
     ],
     dependencies: [
@@ -38,10 +38,11 @@ let package = Package(
             ]
         ),
         .target(
-            name: "BravePlaylist",
+            name: "WebMedia",
             dependencies: [
                 .product(name: "SwiftUIWebView", package: "swiftui-webview")
             ],
+            path: "Sources/WebMedia",
             resources: [
                 .process("Resources")
             ]
@@ -51,8 +52,9 @@ let package = Package(
             dependencies: ["BraveAdblock"]
         ),
         .testTarget(
-            name: "BravePlaylistTests",
-            dependencies: ["BravePlaylist"]
+            name: "WebMediaTests",
+            dependencies: ["WebMedia"],
+            path: "Tests/WebMediaTests"
         )
     ]
 )

@@ -5,11 +5,12 @@ from __future__ import annotations
 import shutil
 import sys
 from pathlib import Path
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BRAVE_CORE_ROOT = REPO_ROOT.parent / "brave-core" / "ios" / "brave-ios" / "Sources" / "Brave" / "Frontend"
-DESTINATION_ROOT = REPO_ROOT / "Sources" / "BravePlaylist" / "Resources"
+DESTINATION_ROOT = REPO_ROOT / "Sources" / "WebMedia" / "Resources"
 
 SOURCE_MAP = {
     DEFAULT_BRAVE_CORE_ROOT / "UserContent" / "UserScripts" / "__firefox__.js":
@@ -19,6 +20,226 @@ SOURCE_MAP = {
     DEFAULT_BRAVE_CORE_ROOT / "UserContent" / "UserScripts" / "Scripts_Dynamic" / "Scripts" / "Paged" / "PlaylistSwizzlerScript.js":
         DESTINATION_ROOT / "UserScripts" / "PlaylistSwizzlerScript.js",
 }
+
+IDENTIFIER_REWRITE_MAP = {
+    "PlaylistInfo": "WebMediaInfo",
+    "MediaInfo": "WebMediaInfo",
+    "PlaylistMediaKind": "WebMediaKind",
+    "MediaKind": "WebMediaKind",
+    "PlaylistContainerKind": "WebMediaContainerKind",
+    "MediaContainerKind": "WebMediaContainerKind",
+    "PlaylistPlaybackKind": "WebMediaPlaybackKind",
+    "MediaPlaybackKind": "WebMediaPlaybackKind",
+    "PlaylistLibrary": "WebMediaLibrary",
+    "MediaLibrary": "WebMediaLibrary",
+    "PlaylistWebLoaderFactory": "WebMediaLoaderFactory",
+    "MediaWebLoaderFactory": "WebMediaLoaderFactory",
+    "PlaylistWebLoader": "WebMediaLoader",
+    "MediaWebLoader": "WebMediaLoader",
+    "PlaylistMediaRequestContext": "WebMediaRequestContext",
+    "MediaRequestContext": "WebMediaRequestContext",
+    "PlaylistMediaResolutionMethod": "WebMediaResolutionMethod",
+    "MediaResolutionMethod": "WebMediaResolutionMethod",
+    "PlaylistResolvedMedia": "ResolvedWebMedia",
+    "ResolvedMedia": "ResolvedWebMedia",
+    "PlaylistMediaStreamer": "WebMediaStreamer",
+    "MediaStreamer": "WebMediaStreamer",
+    "PlaylistMimeTypeDetector": "WebMediaMimeTypeDetector",
+    "MediaMimeTypeDetector": "WebMediaMimeTypeDetector",
+    "PlaylistOfflineStorageScope": "WebMediaOfflineStorageScope",
+    "OfflineMediaStorageScope": "WebMediaOfflineStorageScope",
+    "PlaylistRetentionPolicy": "WebMediaRetentionPolicy",
+    "MediaRetentionPolicy": "WebMediaRetentionPolicy",
+    "PlaylistDownloadState": "WebMediaDownloadState",
+    "MediaDownloadState": "WebMediaDownloadState",
+    "PlaylistStoredMediaState": "StoredWebMediaState",
+    "StoredMediaState": "StoredWebMediaState",
+    "PlaylistDownloadProgress": "WebMediaDownloadProgress",
+    "MediaDownloadProgress": "WebMediaDownloadProgress",
+    "PlaylistDownloadEventKind": "WebMediaDownloadEventKind",
+    "MediaDownloadEventKind": "WebMediaDownloadEventKind",
+    "PlaylistDownloadEvent": "WebMediaDownloadEvent",
+    "MediaDownloadEvent": "WebMediaDownloadEvent",
+    "PlaylistThumbnailLoadingPolicy": "WebMediaThumbnailLoadingPolicy",
+    "MediaThumbnailLoadingPolicy": "WebMediaThumbnailLoadingPolicy",
+    "PlaylistThumbnailRequest": "WebMediaThumbnailRequest",
+    "MediaThumbnailRequest": "WebMediaThumbnailRequest",
+    "PlaylistResolvedMediaSnapshot": "ResolvedWebMediaSnapshot",
+    "ResolvedMediaSnapshot": "ResolvedWebMediaSnapshot",
+    "PlaylistStoredMedia": "StoredWebMedia",
+    "StoredMedia": "StoredWebMedia",
+    "PlaylistDownloadRecord": "WebMediaDownloadRecord",
+    "MediaDownloadRecord": "WebMediaDownloadRecord",
+    "PlaylistOfflineStoreError": "WebMediaOfflineStoreError",
+    "OfflineMediaStoreError": "WebMediaOfflineStoreError",
+    "PlaylistArtifactDownloading": "WebMediaArtifactDownloading",
+    "MediaArtifactDownloading": "WebMediaArtifactDownloading",
+    "PlaylistDownloadedArtifact": "DownloadedWebMediaArtifact",
+    "DownloadedMediaArtifact": "DownloadedWebMediaArtifact",
+    "PlaylistAssetDownloader": "WebMediaAssetDownloader",
+    "MediaAssetDownloader": "WebMediaAssetDownloader",
+    "PlaylistHLSAssetDownloading": "WebMediaHLSAssetDownloading",
+    "HLSAssetDownloading": "WebMediaHLSAssetDownloading",
+    "PlaylistHLSAssetDownloader": "WebMediaHLSAssetDownloader",
+    "HLSAssetDownloader": "WebMediaHLSAssetDownloader",
+    "PlaylistOfflineMediaStore": "WebMediaOfflineStore",
+    "OfflineMediaStore": "WebMediaOfflineStore",
+    "PlaylistStoredMediaMetadata": "StoredWebMediaMetadata",
+    "StoredMediaMetadata": "StoredWebMediaMetadata",
+    "PlaylistStoredMediaThumbnailStore": "StoredWebMediaThumbnailStore",
+    "StoredMediaThumbnailStore": "StoredWebMediaThumbnailStore",
+    "PlaylistStoredMediaFileSystem": "StoredWebMediaFileSystem",
+    "StoredMediaFileSystem": "StoredWebMediaFileSystem",
+    "PlaylistScriptError": "WebMediaScriptError",
+    "MediaScriptError": "WebMediaScriptError",
+    "PlaylistScriptConfiguration": "WebMediaScriptConfiguration",
+    "MediaScriptConfiguration": "WebMediaScriptConfiguration",
+    "PlaylistBuiltScriptSet": "WebMediaBuiltScriptSet",
+    "MediaBuiltScriptSet": "WebMediaBuiltScriptSet",
+    "PlaylistScriptEngine": "WebMediaScriptEngine",
+    "MediaScriptEngine": "WebMediaScriptEngine",
+    "PlaylistReadyState": "WebMediaReadyState",
+    "MediaReadyState": "WebMediaReadyState",
+    "PlaylistPlaybackEventName": "WebMediaPlaybackEventName",
+    "MediaPlaybackEventName": "WebMediaPlaybackEventName",
+    "PlaylistPlaybackPresentationMode": "WebMediaPlaybackPresentationMode",
+    "MediaPlaybackPresentationMode": "WebMediaPlaybackPresentationMode",
+    "PlaylistPlaybackSnapshot": "WebMediaPlaybackSnapshot",
+    "MediaPlaybackSnapshot": "WebMediaPlaybackSnapshot",
+    "PlaylistPlaybackEvent": "WebMediaPlaybackEvent",
+    "MediaPlaybackEvent": "WebMediaPlaybackEvent",
+    "PlaylistScriptMessage": "WebMediaScriptMessage",
+    "MediaScriptMessage": "WebMediaScriptMessage",
+    "PlaylistScriptMessageDecoder": "WebMediaScriptMessageDecoder",
+    "MediaScriptMessageDecoder": "WebMediaScriptMessageDecoder",
+    "PlaylistWebScriptSet": "WebMediaScriptSet",
+    "MediaWebScriptSet": "WebMediaScriptSet",
+    "PlaylistWebScripts": "WebMediaScripts",
+    "MediaWebScripts": "WebMediaScripts",
+    "PlaylistWebMessageDecoder": "WebMediaMessageDecoder",
+    "MediaWebMessageDecoder": "WebMediaMessageDecoder",
+    "PlaylistCandidateSelector": "WebMediaCandidateSelector",
+    "MediaCandidateSelector": "WebMediaCandidateSelector",
+    "PlaylistRequestContextBuilder": "WebMediaRequestContextBuilder",
+    "MediaRequestContextBuilder": "WebMediaRequestContextBuilder",
+    "MediaCaptureMediaKind": "WebMediaCaptureMediaKind",
+    "MediaCapturePlaybackKind": "WebMediaCapturePlaybackKind",
+    "MediaCaptureReadyState": "WebMediaCaptureReadyState",
+    "MediaCapturePlaybackEventName": "WebMediaCapturePlaybackEventName",
+    "MediaCapturePlaybackPresentationMode": "WebMediaCapturePlaybackPresentationMode",
+    "MediaCapturePlaybackSnapshot": "WebMediaCapturePlaybackSnapshot",
+    "MediaCapturePlaybackEvent": "WebMediaCapturePlaybackEvent",
+    "MediaCaptureScriptConfiguration": "WebMediaCaptureScriptConfiguration",
+    "MediaCaptureResolutionMethod": "WebMediaCaptureResolutionMethod",
+    "MediaCaptureCandidate": "WebMediaCaptureCandidate",
+    "MediaCaptureResolvedMedia": "WebMediaCaptureResolvedMedia",
+    "MediaCaptureRequestContext": "WebMediaCaptureRequestContext",
+    "MediaCaptureWebScriptSet": "WebMediaCaptureWebScriptSet",
+    "MediaCaptureMessage": "WebMediaCaptureMessage",
+    "MediaCaptureWebScripts": "WebMediaCaptureWebScripts",
+    "MediaCaptureMessageDecoder": "WebMediaCaptureMessageDecoder",
+    "MediaCaptureCandidateSelector": "WebMediaCaptureCandidateSelector",
+    "MediaCaptureRequestContextBuilder": "WebMediaCaptureRequestContextBuilder",
+    "MediaCaptureStorageScope": "WebMediaCaptureStorageScope",
+    "MediaCaptureRetentionPolicy": "WebMediaCaptureRetentionPolicy",
+    "MediaCaptureDownloadProgress": "WebMediaCaptureDownloadProgress",
+    "MediaCaptureStoredMedia": "WebMediaCaptureStoredMedia",
+    "MediaCaptureLibrary": "WebMediaCaptureLibrary",
+    "MediaCaptureDownloadedMedia": "WebMediaCaptureDownloadedMedia",
+    "MediaCaptureDownloader": "WebMediaCaptureDownloader",
+}
+
+PUBLIC_COMPATIBILITY_ALIASES = {
+    key: value for key, value in IDENTIFIER_REWRITE_MAP.items()
+    if key not in {
+        "PlaylistStoredMediaMetadata",
+        "PlaylistStoredMediaThumbnailStore",
+        "PlaylistStoredMediaFileSystem",
+        "StoredMediaMetadata",
+        "StoredMediaThumbnailStore",
+        "StoredMediaFileSystem",
+    }
+}
+
+CANONICAL_FILE_CANDIDATES = {
+    "WebMediaCaptureSupport.swift": ["WebMediaCaptureSupport.swift", "MediaCaptureSupport.swift"],
+    "WebMediaInfo.swift": ["WebMediaInfo.swift", "MediaInfo.swift", "PlaylistInfo.swift"],
+    "WebMediaLibrary.swift": ["WebMediaLibrary.swift", "MediaLibrary.swift", "PlaylistLibrary.swift"],
+    "WebMediaStreamer.swift": ["WebMediaStreamer.swift", "MediaStreamer.swift", "PlaylistMediaStreamer.swift"],
+    "WebMediaMimeTypeDetector.swift": ["WebMediaMimeTypeDetector.swift", "MediaMimeTypeDetector.swift", "PlaylistMimeTypeDetector.swift"],
+    "WebMediaOfflineStore.swift": ["WebMediaOfflineStore.swift", "OfflineMediaStore.swift", "PlaylistOfflineMediaStore.swift"],
+    "WebMediaScriptEngine.swift": ["WebMediaScriptEngine.swift", "MediaScriptEngine.swift", "PlaylistScriptEngine.swift"],
+    "WebMediaScriptMessage.swift": ["WebMediaScriptMessage.swift", "MediaScriptMessage.swift", "PlaylistScriptMessage.swift"],
+    "WebMediaSupport.swift": ["WebMediaSupport.swift", "MediaWebSupport.swift", "PlaylistWebSupport.swift"],
+}
+
+COMPATIBILITY_STUB_MARKER = "// Generated compatibility stub retained for SwiftBrave.xcodeproj source lists.\n"
+
+TEXT_REWRITE_PATHS = [
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "Tests" / "WebMediaTests" / "WebMediaTests.swift",
+]
+
+SWIFT_SOURCE_ROOT = REPO_ROOT / "Sources" / "WebMedia"
+COMPATIBILITY_FILE = SWIFT_SOURCE_ROOT / "PlaylistCompatibilityAliases.swift"
+
+
+def rewrite_text(text: str) -> str:
+    for source, destination in sorted(IDENTIFIER_REWRITE_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(rf"\b{re.escape(source)}\b", destination, text)
+    return text
+
+
+def rewrite_file(path: Path) -> None:
+    original = path.read_text()
+    rewritten = rewrite_text(original)
+    if rewritten != original:
+        path.write_text(rewritten)
+        print(f"rewrote {path}")
+
+
+def rename_overlay_files() -> None:
+    for canonical_name, candidates in CANONICAL_FILE_CANDIDATES.items():
+        canonical_path = SWIFT_SOURCE_ROOT / canonical_name
+        chosen_source: Path | None = None
+
+        for candidate_name in candidates:
+            candidate_path = SWIFT_SOURCE_ROOT / candidate_name
+            if not candidate_path.exists():
+                continue
+            if "Compatibility stub retained for SwiftBrave.xcodeproj source lists." in candidate_path.read_text():
+                continue
+            chosen_source = candidate_path
+            break
+
+        if chosen_source is not None and chosen_source != canonical_path:
+            if canonical_path.exists():
+                canonical_path.unlink()
+            chosen_source.rename(canonical_path)
+            print(f"renamed {chosen_source} -> {canonical_path}")
+
+        for candidate_name in candidates:
+            candidate_path = SWIFT_SOURCE_ROOT / candidate_name
+            if candidate_path == canonical_path:
+                continue
+            candidate_path.write_text(COMPATIBILITY_STUB_MARKER)
+            print(f"generated compatibility stub {candidate_path}")
+
+
+def generate_compatibility_aliases() -> None:
+    aliases = [
+        "// Generated by Scripts/sync_playlist_sources.py",
+        "// Keep old Playlist* and Media* names as compatibility aliases while WebMedia* becomes canonical.",
+        "",
+        "import Foundation",
+        "",
+    ]
+    for old_name, new_name in sorted(PUBLIC_COMPATIBILITY_ALIASES.items()):
+        aliases.append(f'@available(*, deprecated, renamed: "{new_name}")')
+        aliases.append(f"public typealias {old_name} = {new_name}")
+        aliases.append("")
+    COMPATIBILITY_FILE.write_text("\n".join(aliases).rstrip() + "\n")
+    print(f"generated {COMPATIBILITY_FILE}")
 
 
 def main() -> int:
@@ -33,6 +254,19 @@ def main() -> int:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         print(f"synced {source} -> {destination}")
+
+    rename_overlay_files()
+
+    for path in sorted(SWIFT_SOURCE_ROOT.glob("*.swift")):
+        if path == COMPATIBILITY_FILE:
+            continue
+        rewrite_file(path)
+
+    for path in TEXT_REWRITE_PATHS:
+        if path.exists():
+            rewrite_file(path)
+
+    generate_compatibility_aliases()
 
     return 0
 

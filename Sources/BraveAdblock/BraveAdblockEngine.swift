@@ -12,7 +12,8 @@ public enum AdblockResourceType: String, Sendable, CaseIterable {
 }
 
 public final class BraveAdblockEngine {
-    private static var didConfigureDomainResolver = false
+    private static let configureDomainResolverLock = NSLock()
+    private nonisolated(unsafe) static var didConfigureDomainResolver = false
     private let engine: AdblockEngine
 
     public init(rules: String) throws {
@@ -50,6 +51,8 @@ public final class BraveAdblockEngine {
     }
 
     private static func configureDomainResolverIfNeeded() {
+        configureDomainResolverLock.lock()
+        defer { configureDomainResolverLock.unlock() }
         guard !didConfigureDomainResolver else { return }
         _ = AdblockEngine.setDomainResolver()
         didConfigureDomainResolver = true
