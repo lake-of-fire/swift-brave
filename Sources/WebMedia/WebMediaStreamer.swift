@@ -38,20 +38,20 @@ public enum WebMediaResolutionMethod: String, Hashable, Codable, Sendable {
 }
 
 public struct ResolvedWebMedia: Hashable, Sendable {
-    public let playlistInfo: WebMediaInfo
+    public let mediaInfo: WebMediaInfo
     public let url: URL
     public let mimeType: String?
     public let requestHeaders: [String: String]
     public let resolutionMethod: WebMediaResolutionMethod
 
     public init(
-        playlistInfo: WebMediaInfo,
+        mediaInfo: WebMediaInfo,
         url: URL,
         mimeType: String?,
         requestHeaders: [String: String] = [:],
         resolutionMethod: WebMediaResolutionMethod
     ) {
-        self.playlistInfo = playlistInfo
+        self.mediaInfo = mediaInfo
         self.url = url
         self.mimeType = mimeType
         self.requestHeaders = requestHeaders
@@ -182,7 +182,7 @@ public final class WebMediaStreamer: @unchecked Sendable {
         }
 
         return ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: url,
             mimeType: mimeType,
             requestHeaders: requestContext.headers,

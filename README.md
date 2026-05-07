@@ -8,7 +8,7 @@ Swift Package for a trimmed Brave-derived adblock and media-capture stack.
 
 It currently provides:
 
-- playlist detector/swizzler scripts derived from Brave
+- media detector/swizzler scripts derived from Brave
 - message decoding and candidate selection
 - direct URL vs hidden-webview fallback media resolution
 - hidden offline media downloads for file and HLS media
@@ -24,7 +24,7 @@ It currently provides:
 - stored-media lookup by item or page URL, including a preferred page-level result
 - eager or lazy local thumbnail storage
 
-It intentionally does **not** include Brave playlist UI, folders, CoreData models, toasts, or any user-visible file exposure.
+It intentionally does **not** include playlist UI, folders, CoreData models, toasts, or any user-visible file exposure.
 
 ### Core types
 
@@ -65,7 +65,7 @@ The store/library also expose:
 - `retryDownload(id:)`
 - `downloadEvents(id:)`
 
-This is the intended minimal control surface for Manabi/LakeOfFire before any playlist UI exists.
+This is the intended minimal control surface for Manabi/LakeOfFire before any playlist-management UI exists.
 
 ### Retention and state model
 

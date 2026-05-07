@@ -3,19 +3,19 @@ import WebKit
 import SwiftUIWebView
 
 public struct WebMediaScriptSet: Sendable {
-    public let playlistScripts: WebMediaBuiltScriptSet
+    public let webMediaScripts: WebMediaBuiltScriptSet
     public let userScripts: [WebViewUserScript]
 
     public var messageHandlerName: String {
-        playlistScripts.configuration.messageHandlerName
+        webMediaScripts.configuration.messageHandlerName
     }
 
     public var securityToken: String {
-        playlistScripts.configuration.securityToken
+        webMediaScripts.configuration.securityToken
     }
 
     public var processDocumentLoadJavaScript: String {
-        playlistScripts.processDocumentLoadJavaScript
+        webMediaScripts.processDocumentLoadJavaScript
     }
 }
 
@@ -26,33 +26,30 @@ public enum WebMediaScripts {
         configuration: WebMediaScriptConfiguration? = nil
     ) throws -> WebMediaScriptSet {
         let configuration = configuration ?? WebMediaScriptConfiguration(messageHandlerName: messageHandlerName)
-        let playlistScripts = try WebMediaScriptEngine.makeScriptSet(configuration: configuration)
+        let webMediaScripts = try WebMediaScriptEngine.makeScriptSet(configuration: configuration)
         let userScripts = [
             WebViewUserScript(
-                source: playlistScripts.firefoxShimSource,
+                source: webMediaScripts.firefoxShimSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false,
-                in: .page,
                 allowedDomains: allowedDomains
             ),
             WebViewUserScript(
-                source: playlistScripts.mediaSourceOverrideSource,
+                source: webMediaScripts.mediaSourceOverrideSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false,
-                in: .page,
                 allowedDomains: allowedDomains
             ),
             WebViewUserScript(
-                source: playlistScripts.detectorSource,
+                source: webMediaScripts.detectorSource,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false,
-                in: .page,
                 allowedDomains: allowedDomains
             ),
         ]
 
         return WebMediaScriptSet(
-            playlistScripts: playlistScripts,
+            webMediaScripts: webMediaScripts,
             userScripts: userScripts
         )
     }

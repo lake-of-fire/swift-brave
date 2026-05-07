@@ -241,14 +241,14 @@ public struct WebMediaThumbnailRequest: Codable, Hashable, Sendable {
 }
 
 public struct ResolvedWebMediaSnapshot: Codable, Hashable, Sendable {
-    public let playlistInfo: WebMediaInfo
+    public let mediaInfo: WebMediaInfo
     public let resolvedMediaURL: URL
     public let mimeType: String?
     public let requestHeaders: [String: String]
     public let resolutionMethod: WebMediaResolutionMethod
 
     public init(media: ResolvedWebMedia) {
-        self.playlistInfo = media.playlistInfo
+        self.mediaInfo = media.mediaInfo
         self.resolvedMediaURL = media.url
         self.mimeType = media.mimeType
         self.requestHeaders = media.requestHeaders
@@ -256,13 +256,13 @@ public struct ResolvedWebMediaSnapshot: Codable, Hashable, Sendable {
     }
 
     public init(
-        playlistInfo: WebMediaInfo,
+        mediaInfo: WebMediaInfo,
         resolvedMediaURL: URL,
         mimeType: String?,
         requestHeaders: [String: String],
         resolutionMethod: WebMediaResolutionMethod
     ) {
-        self.playlistInfo = playlistInfo
+        self.mediaInfo = mediaInfo
         self.resolvedMediaURL = resolvedMediaURL
         self.mimeType = mimeType
         self.requestHeaders = requestHeaders
@@ -271,18 +271,46 @@ public struct ResolvedWebMediaSnapshot: Codable, Hashable, Sendable {
 
     public func makeResolvedMedia() -> ResolvedWebMedia {
         ResolvedWebMedia(
-            playlistInfo: playlistInfo,
+            mediaInfo: mediaInfo,
             url: resolvedMediaURL,
             mimeType: mimeType,
             requestHeaders: requestHeaders,
             resolutionMethod: resolutionMethod
         )
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case mediaInfo
+        case legacyPlaylistInfo = "playlistInfo"
+        case resolvedMediaURL
+        case mimeType
+        case requestHeaders
+        case resolutionMethod
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.mediaInfo = try container.decodeIfPresent(WebMediaInfo.self, forKey: .mediaInfo)
+            ?? container.decode(WebMediaInfo.self, forKey: .legacyPlaylistInfo)
+        self.resolvedMediaURL = try container.decode(URL.self, forKey: .resolvedMediaURL)
+        self.mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        self.requestHeaders = try container.decodeIfPresent([String: String].self, forKey: .requestHeaders) ?? [:]
+        self.resolutionMethod = try container.decode(WebMediaResolutionMethod.self, forKey: .resolutionMethod)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mediaInfo, forKey: .mediaInfo)
+        try container.encode(resolvedMediaURL, forKey: .resolvedMediaURL)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+        try container.encode(requestHeaders, forKey: .requestHeaders)
+        try container.encode(resolutionMethod, forKey: .resolutionMethod)
+    }
 }
 
 public struct StoredWebMedia: Hashable, Identifiable, Sendable {
     public let id: String
-    public let playlistInfo: WebMediaInfo
+    public let mediaInfo: WebMediaInfo
     public let storedMediaState: StoredWebMediaState
     public let storageScope: WebMediaOfflineStorageScope
     public let retentionPolicy: WebMediaRetentionPolicy
@@ -296,15 +324,15 @@ public struct StoredWebMedia: Hashable, Identifiable, Sendable {
     public let lastAccessedAt: Date
 
     public var pageURL: URL? {
-        playlistInfo.pageURL
+        mediaInfo.pageURL
     }
 
     public var pageLookupKey: String {
-        playlistInfo.pageLookupKey
+        mediaInfo.pageLookupKey
     }
 
     public var candidateLookupKey: String {
-        playlistInfo.candidateLookupKey
+        mediaInfo.candidateLookupKey
     }
 
     public var isPersistent: Bool {
@@ -314,7 +342,7 @@ public struct StoredWebMedia: Hashable, Identifiable, Sendable {
 
 public struct WebMediaDownloadRecord: Hashable, Identifiable, Sendable {
     public let id: String
-    public let playlistInfo: WebMediaInfo
+    public let mediaInfo: WebMediaInfo
     public let storedMediaState: StoredWebMediaState
     public let storageScope: WebMediaOfflineStorageScope
     public let retentionPolicy: WebMediaRetentionPolicy
@@ -332,11 +360,11 @@ public struct WebMediaDownloadRecord: Hashable, Identifiable, Sendable {
     public let downloadedAt: Date?
 
     public var pageLookupKey: String {
-        playlistInfo.pageLookupKey
+        mediaInfo.pageLookupKey
     }
 
     public var candidateLookupKey: String {
-        playlistInfo.candidateLookupKey
+        mediaInfo.candidateLookupKey
     }
 
     public var isPersistent: Bool {
@@ -394,7 +422,7 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
         identifier: String,
         onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
     ) async throws -> DownloadedWebMediaArtifact {
-        if media.playlistInfo.containerKind == .hls {
+        if media.mediaInfo.containerKind == .hls {
             return try await hlsDownloaderFactory().download(
                 media: media,
                 into: directory,
@@ -598,7 +626,7 @@ public final class WebMediaHLSAssetDownloader: NSObject, WebMediaHLSAssetDownloa
                 self.resolvedMimeType = media.mimeType
 
                 let configuration = URLSessionConfiguration.background(
-                    withIdentifier: "com.lakeoffire.swift-brave.playlist.hls.\(UUID().uuidString)"
+                    withIdentifier: "com.lakeoffire.swift-brave.webmedia.hls.\(UUID().uuidString)"
                 )
                 let session = AVAssetDownloadURLSession(
                     configuration: configuration,
@@ -613,7 +641,7 @@ public final class WebMediaHLSAssetDownloader: NSObject, WebMediaHLSAssetDownloa
                 let asset = AVURLAsset(url: media.url, options: assetOptions)
                 guard let task = session.makeAssetDownloadTask(
                     asset: asset,
-                    assetTitle: media.playlistInfo.preferredDisplayName,
+                    assetTitle: media.mediaInfo.preferredDisplayName,
                     assetArtworkData: nil,
                     options: nil
                 ) else {
@@ -909,7 +937,7 @@ public actor WebMediaOfflineStore {
     ) async throws -> WebMediaDownloadRecord {
         try prepareRootsIfNeeded()
 
-        if let existing = try storedMedia(for: media.playlistInfo) {
+        if let existing = try storedMedia(for: media.mediaInfo) {
             if existing.storageScope == .transient && storageScope == .persistent {
                 let promoted = try updateStorageScope(.persistent, for: existing.id)
                 return try currentDownloadRecord(id: promoted.id) ?? Self.makeDownloadRecord(from: promoted)
@@ -917,7 +945,7 @@ public actor WebMediaOfflineStore {
             return Self.makeDownloadRecord(from: existing)
         }
 
-        let identifier = Self.storedMediaIdentifier(for: media.playlistInfo)
+        let identifier = Self.storedMediaIdentifier(for: media.mediaInfo)
         let itemDirectory = directoryURL(for: identifier, scope: storageScope)
         let existingRecord = try currentDownloadRecord(id: identifier)
         let shouldRestart = existingRecord?.state == .failed || existingRecord?.state == .cancelled
@@ -943,7 +971,7 @@ public actor WebMediaOfflineStore {
                 try FileManager.default.moveItem(at: currentDirectory, to: targetDirectory)
             }
             try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
-            existingMetadata.playlistInfo = media.playlistInfo
+            existingMetadata.mediaInfo = media.mediaInfo
             existingMetadata.storageScope = storageScope
             existingMetadata.retentionPolicy = resolvedRetentionPolicy
             existingMetadata.resolvedMedia = .init(media: media)
@@ -965,7 +993,7 @@ public actor WebMediaOfflineStore {
             try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
             metadata = StoredWebMediaMetadata(
                 id: identifier,
-                playlistInfo: media.playlistInfo,
+                mediaInfo: media.mediaInfo,
                 storageScope: storageScope,
                 retentionPolicy: resolvedRetentionPolicy,
                 resolvedMedia: .init(media: media),
@@ -1123,7 +1151,7 @@ public actor WebMediaOfflineStore {
     public func storedMedia(for item: WebMediaInfo) throws -> StoredWebMedia? {
         guard let metadata = try (
             loadAllMetadata()
-                .filter { $0.state == .downloaded && $0.playlistInfo.candidateLookupKey == item.candidateLookupKey }
+                .filter { $0.state == .downloaded && $0.mediaInfo.candidateLookupKey == item.candidateLookupKey }
                 .sorted(by: Self.preferredStoredMetadataOrdering)
                 .first
         )
@@ -1145,7 +1173,7 @@ public actor WebMediaOfflineStore {
             loadAllMetadata()
                 .filter {
                     $0.state == .downloaded
-                        && $0.playlistInfo.pageLookupKey == WebMediaInfo.pageLookupKey(for: pageURL.absoluteString)
+                        && $0.mediaInfo.pageLookupKey == WebMediaInfo.pageLookupKey(for: pageURL.absoluteString)
                 }
                 .sorted(by: Self.preferredStoredMetadataOrdering)
                 .first
@@ -1521,7 +1549,7 @@ public actor WebMediaOfflineStore {
             metadata.mediaRelativePath = artifact.relativeMediaPath
             metadata.thumbnailRelativePath = thumbnailRelativePath
             metadata.resolvedMedia = ResolvedWebMediaSnapshot(
-                playlistInfo: metadata.playlistInfo,
+                mediaInfo: metadata.mediaInfo,
                 resolvedMediaURL: metadata.resolvedMedia.resolvedMediaURL,
                 mimeType: artifact.mimeType ?? metadata.resolvedMedia.mimeType,
                 requestHeaders: metadata.resolvedMedia.requestHeaders,
@@ -1531,7 +1559,7 @@ public actor WebMediaOfflineStore {
 
             if metadata.storageScope == .transient {
                 let pageLookupKeys = Set(
-                    metadata.playlistInfo.pageURL.map { WebMediaInfo.pageLookupKey(for: $0.absoluteString) }.map { [$0] }
+                    metadata.mediaInfo.pageURL.map { WebMediaInfo.pageLookupKey(for: $0.absoluteString) }.map { [$0] }
                         ?? []
                 )
                 try enforceTransientStoragePolicy(excluding: [identifier], exceptPageLookupKeys: pageLookupKeys)
@@ -1897,7 +1925,7 @@ public actor WebMediaOfflineStore {
     private static func makeDownloadRecord(from stored: StoredWebMedia) -> WebMediaDownloadRecord {
         WebMediaDownloadRecord(
             id: stored.id,
-            playlistInfo: stored.playlistInfo,
+            mediaInfo: stored.mediaInfo,
             storedMediaState: stored.storedMediaState,
             storageScope: stored.storageScope,
             retentionPolicy: stored.retentionPolicy,
@@ -1924,7 +1952,7 @@ public actor WebMediaOfflineStore {
 
 private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
     var id: String
-    var playlistInfo: WebMediaInfo
+    var mediaInfo: WebMediaInfo
     var storageScope: WebMediaOfflineStorageScope
     var retentionPolicy: WebMediaRetentionPolicy
     var resolvedMedia: ResolvedWebMediaSnapshot
@@ -1942,7 +1970,8 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id
-        case playlistInfo
+        case mediaInfo
+        case legacyPlaylistInfo = "playlistInfo"
         case storageScope
         case retentionPolicy
         case resolvedMedia
@@ -1961,7 +1990,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
 
     init(
         id: String,
-        playlistInfo: WebMediaInfo,
+        mediaInfo: WebMediaInfo,
         storageScope: WebMediaOfflineStorageScope,
         retentionPolicy: WebMediaRetentionPolicy,
         resolvedMedia: ResolvedWebMediaSnapshot,
@@ -1978,7 +2007,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
         thumbnailRequest: WebMediaThumbnailRequest
     ) {
         self.id = id
-        self.playlistInfo = playlistInfo
+        self.mediaInfo = mediaInfo
         self.storageScope = storageScope
         self.retentionPolicy = retentionPolicy
         self.resolvedMedia = resolvedMedia
@@ -1998,7 +2027,8 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
-        self.playlistInfo = try container.decode(WebMediaInfo.self, forKey: .playlistInfo)
+        self.mediaInfo = try container.decodeIfPresent(WebMediaInfo.self, forKey: .mediaInfo)
+            ?? container.decode(WebMediaInfo.self, forKey: .legacyPlaylistInfo)
         self.storageScope = try container.decode(WebMediaOfflineStorageScope.self, forKey: .storageScope)
         self.retentionPolicy =
             try container.decodeIfPresent(WebMediaRetentionPolicy.self, forKey: .retentionPolicy)
@@ -2021,6 +2051,26 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
             ?? .automatic()
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(mediaInfo, forKey: .mediaInfo)
+        try container.encode(storageScope, forKey: .storageScope)
+        try container.encode(retentionPolicy, forKey: .retentionPolicy)
+        try container.encode(resolvedMedia, forKey: .resolvedMedia)
+        try container.encode(state, forKey: .state)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(downloadedAt, forKey: .downloadedAt)
+        try container.encodeIfPresent(lastAccessedAt, forKey: .lastAccessedAt)
+        try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(failureDescription, forKey: .failureDescription)
+        try container.encodeIfPresent(mediaRelativePath, forKey: .mediaRelativePath)
+        try container.encodeIfPresent(thumbnailRelativePath, forKey: .thumbnailRelativePath)
+        try container.encodeIfPresent(byteCount, forKey: .byteCount)
+        try container.encode(thumbnailRequest, forKey: .thumbnailRequest)
+    }
+
     func makeStoredMedia(rootDirectory: URL) -> StoredWebMedia? {
         guard state == .downloaded,
               let mediaRelativePath,
@@ -2031,7 +2081,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
 
         return StoredWebMedia(
             id: id,
-            playlistInfo: playlistInfo,
+            mediaInfo: mediaInfo,
             storedMediaState: .make(downloadState: state, storageScope: storageScope),
             storageScope: storageScope,
             retentionPolicy: retentionPolicy,
@@ -2051,7 +2101,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
     func makeDownloadRecord(rootDirectory: URL) -> WebMediaDownloadRecord {
         WebMediaDownloadRecord(
             id: id,
-            playlistInfo: playlistInfo,
+            mediaInfo: mediaInfo,
             storedMediaState: .make(downloadState: state, storageScope: storageScope),
             storageScope: storageScope,
             retentionPolicy: retentionPolicy,

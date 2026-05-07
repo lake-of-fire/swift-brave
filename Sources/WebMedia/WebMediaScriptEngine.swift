@@ -32,12 +32,12 @@ public struct WebMediaScriptConfiguration: Hashable, Sendable {
         self.securityToken = securityToken
         self.tagAttributeName = "tagId_\(namespaceToken)"
         self.sendMessageTimeoutName = "smt_\(namespaceToken)"
-        self.longPressFunctionName = "playlistLongPressed_\(namespaceToken)"
-        self.processDocumentLoadFunctionName = "playlistProcessDocumentLoad_\(namespaceToken)"
+        self.longPressFunctionName = "webMediaLongPressed_\(namespaceToken)"
+        self.processDocumentLoadFunctionName = "webMediaProcessDocumentLoad_\(namespaceToken)"
         self.currentTimeFunctionName = "mediaCurrentTimeFromTag_\(namespaceToken)"
         self.stopPlaybackFunctionName = "stopMediaPlayback_\(namespaceToken)"
-        self.telemetryAttachedName = "playlistTelemetryAttached_\(namespaceToken)"
-        self.telemetryHeartbeatName = "playlistTelemetryHeartbeat_\(namespaceToken)"
+        self.telemetryAttachedName = "webMediaTelemetryAttached_\(namespaceToken)"
+        self.telemetryHeartbeatName = "webMediaTelemetryHeartbeat_\(namespaceToken)"
     }
 }
 

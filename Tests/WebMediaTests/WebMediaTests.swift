@@ -143,9 +143,9 @@ final class WebMediaTests: XCTestCase {
 
         XCTAssertTrue(scripts.detectorSource.contains("const SECURITY_TOKEN = 'security-token';"))
         XCTAssertTrue(scripts.detectorSource.contains("mediaHandler"))
-        XCTAssertTrue(scripts.detectorSource.contains("playlistProcessDocumentLoad_namespace"))
+        XCTAssertTrue(scripts.detectorSource.contains("webMediaProcessDocumentLoad_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("mediaCurrentTimeFromTag_namespace"))
-        XCTAssertTrue(scripts.detectorSource.contains("playlistTelemetryAttached_namespace"))
+        XCTAssertTrue(scripts.detectorSource.contains("webMediaTelemetryAttached_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("window.webkit.messageHandlers"))
         XCTAssertTrue(scripts.firefoxShimSource.contains("window.__firefox__"))
         XCTAssertTrue(scripts.mediaSourceOverrideSource.contains("delete window.MediaSource;"))
@@ -169,7 +169,7 @@ final class WebMediaTests: XCTestCase {
         XCTAssertTrue(scriptSet.userScripts[2].source.contains("security-token"))
         XCTAssertEqual(
             scriptSet.processDocumentLoadJavaScript,
-            "window.__firefox__.playlistProcessDocumentLoad_namespace()"
+            "window.__firefox__.webMediaProcessDocumentLoad_namespace()"
         )
     }
 
@@ -718,7 +718,7 @@ final class WebMediaTests: XCTestCase {
             isInvisible: false
         )
         let resolvedMedia = ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
             mimeType: "audio/mp4",
             requestHeaders: ["Cookie": "session=abc123"],
@@ -754,6 +754,43 @@ final class WebMediaTests: XCTestCase {
         XCTAssertEqual(fixture.downloader.downloadCallCount, 1)
     }
 
+    func testResolvedMediaSnapshotDecodesLegacyPlaylistInfoKeyAndReencodesMediaInfo() throws {
+        let item = WebMediaInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/audio.m4a",
+            pageSrc: "https://example.com/watch?v=1",
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-1",
+            isInvisible: false
+        )
+        let snapshot = ResolvedWebMediaSnapshot(
+            mediaInfo: item,
+            resolvedMediaURL: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
+            mimeType: "audio/mp4",
+            requestHeaders: ["Cookie": "session=abc123"],
+            resolutionMethod: .direct
+        )
+
+        let encoded = try JSONEncoder().encode(snapshot)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["playlistInfo"] = object.removeValue(forKey: "mediaInfo")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(ResolvedWebMediaSnapshot.self, from: legacyData)
+        XCTAssertEqual(decoded.mediaInfo.id, item.id)
+        XCTAssertEqual(decoded.mediaInfo.src, item.src)
+        XCTAssertEqual(decoded.resolvedMediaURL, snapshot.resolvedMediaURL)
+        XCTAssertEqual(decoded.requestHeaders, snapshot.requestHeaders)
+
+        let reencoded = try JSONEncoder().encode(decoded)
+        let reencodedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
+        XCTAssertNotNil(reencodedObject["mediaInfo"])
+        XCTAssertNil(reencodedObject["playlistInfo"])
+    }
+
     func testOfflineStoreReusesExistingCandidateWithoutRedownloading() async throws {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
@@ -770,14 +807,14 @@ final class WebMediaTests: XCTestCase {
             isInvisible: false
         )
         let initial = ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
             mimeType: "audio/mp4",
             requestHeaders: [:],
             resolutionMethod: .direct
         )
         let refreshed = ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=2")!,
             mimeType: "audio/mp4",
             requestHeaders: [:],
@@ -808,7 +845,7 @@ final class WebMediaTests: XCTestCase {
             isInvisible: false
         )
         let resolvedMedia = ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=1")!,
             mimeType: "audio/mp4",
             requestHeaders: [:],
@@ -835,7 +872,7 @@ final class WebMediaTests: XCTestCase {
         let pageURL = URL(string: "https://example.com/watch?v=shared")!
         let transient = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Transient",
                     src: "https://cdn.example.com/transient.mp4",
                     pageSrc: pageURL.absoluteString,
@@ -858,7 +895,7 @@ final class WebMediaTests: XCTestCase {
 
         let persistent = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Persistent",
                     src: "https://cdn.example.com/persistent.mp4",
                     pageSrc: pageURL.absoluteString,
@@ -901,7 +938,7 @@ final class WebMediaTests: XCTestCase {
         let thumbnailData = Data("lazy-thumb".utf8)
         let stored = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: item,
+                mediaInfo: item,
                 url: URL(string: "https://cdn.example.com/audio.m4a?token=lazy")!,
                 mimeType: "audio/mp4",
                 requestHeaders: [:],
@@ -931,7 +968,7 @@ final class WebMediaTests: XCTestCase {
 
         let stored = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Episode",
                     src: "https://cdn.example.com/retain.mp4",
                     pageSrc: "https://example.com/watch?v=retain",
@@ -993,7 +1030,7 @@ final class WebMediaTests: XCTestCase {
 
         let saved = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: persistentItem,
+                mediaInfo: persistentItem,
                 url: URL(string: persistentItem.src)!,
                 mimeType: "audio/mp4",
                 requestHeaders: [:],
@@ -1003,7 +1040,7 @@ final class WebMediaTests: XCTestCase {
         )
         _ = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: transientItem,
+                mediaInfo: transientItem,
                 url: URL(string: transientItem.src)!,
                 mimeType: "audio/mp4",
                 requestHeaders: [:],
@@ -1133,7 +1170,7 @@ final class WebMediaTests: XCTestCase {
 
         let record = try await store.enqueueDownload(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Episode",
                     src: "https://cdn.example.com/cancel.mp4",
                     pageSrc: "https://example.com/watch?v=cancel",
@@ -1197,7 +1234,7 @@ final class WebMediaTests: XCTestCase {
 
         _ = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: item,
+                mediaInfo: item,
                 url: URL(string: "https://cdn.example.com/events.mp4")!,
                 mimeType: "video/mp4",
                 requestHeaders: [:],
@@ -1222,7 +1259,7 @@ final class WebMediaTests: XCTestCase {
 
         let pageBound = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Old page",
                     src: "https://cdn.example.com/old.mp4",
                     pageSrc: oldPage.absoluteString,
@@ -1244,7 +1281,7 @@ final class WebMediaTests: XCTestCase {
         )
         let nextPageBound = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "New page",
                     src: "https://cdn.example.com/new.mp4",
                     pageSrc: newPage.absoluteString,
@@ -1266,7 +1303,7 @@ final class WebMediaTests: XCTestCase {
         )
         let sessionBound = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Session",
                     src: "https://cdn.example.com/session.mp4",
                     pageSrc: newPage.absoluteString,
@@ -1288,7 +1325,7 @@ final class WebMediaTests: XCTestCase {
         )
         let manual = try await fixture.store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Manual",
                     src: "https://cdn.example.com/manual.mp4",
                     pageSrc: oldPage.absoluteString,
@@ -1354,7 +1391,7 @@ final class WebMediaTests: XCTestCase {
 
         let record = try await store.enqueueDownload(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "HLS retry",
                     src: "https://cdn.example.com/retry.m3u8",
                     pageSrc: "https://example.com/watch?v=hls-retry",
@@ -1403,7 +1440,7 @@ final class WebMediaTests: XCTestCase {
             isInvisible: false
         )
         let resolvedMedia = ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: URL(string: "https://cdn.example.com/audio.m4a?token=restore")!,
             mimeType: "audio/mp4",
             requestHeaders: ["Cookie": "session=abc123"],
@@ -1417,7 +1454,7 @@ final class WebMediaTests: XCTestCase {
         try writeMetadataFixture(
             PendingMetadataFixture(
                 id: identifier,
-                playlistInfo: item,
+                mediaInfo: item,
                 storageScope: .transient,
                 retentionPolicy: .manualTransient,
                 resolvedMedia: .init(media: resolvedMedia),
@@ -1479,7 +1516,7 @@ final class WebMediaTests: XCTestCase {
             isInvisible: false
         )
         let resolvedMedia = ResolvedWebMedia(
-            playlistInfo: item,
+            mediaInfo: item,
             url: URL(string: "https://cdn.example.com/resume.mp4")!,
             mimeType: "video/mp4",
             requestHeaders: [:],
@@ -1496,7 +1533,7 @@ final class WebMediaTests: XCTestCase {
         try writeMetadataFixture(
             PendingMetadataFixture(
                 id: identifier,
-                playlistInfo: item,
+                mediaInfo: item,
                 storageScope: .transient,
                 retentionPolicy: .manualTransient,
                 resolvedMedia: .init(media: resolvedMedia),
@@ -1567,7 +1604,7 @@ final class WebMediaTests: XCTestCase {
 
         let first = try await store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "First",
                     src: "https://cdn.example.com/first.mp4",
                     pageSrc: "https://example.com/watch?v=1",
@@ -1589,7 +1626,7 @@ final class WebMediaTests: XCTestCase {
 
         let second = try await store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "Second",
                     src: "https://cdn.example.com/second.mp4",
                     pageSrc: "https://example.com/watch?v=2",
@@ -1643,7 +1680,7 @@ final class WebMediaTests: XCTestCase {
 
         let storedMedia = try await store.download(
             ResolvedWebMedia(
-                playlistInfo: WebMediaInfo(
+                mediaInfo: WebMediaInfo(
                     name: "HLS Episode",
                     src: "https://cdn.example.com/master.m3u8",
                     pageSrc: "https://example.com/watch?v=hls",
@@ -1942,7 +1979,7 @@ private final class MockHLSAssetDownloader: WebMediaHLSAssetDownloading, @unchec
 
 private struct PendingMetadataFixture: Codable {
     let id: String
-    let playlistInfo: WebMediaInfo
+    let mediaInfo: WebMediaInfo
     let storageScope: WebMediaOfflineStorageScope
     let retentionPolicy: WebMediaRetentionPolicy
     let resolvedMedia: ResolvedWebMediaSnapshot

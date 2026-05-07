@@ -262,7 +262,7 @@ public enum WebMediaCaptureResolutionMethod: String, Hashable, Codable, Sendable
 }
 
 public struct WebMediaCaptureCandidate: Hashable, Identifiable, Sendable {
-    let playlistInfo: WebMediaInfo
+    let mediaInfo: WebMediaInfo
 
     public init(
         name: String,
@@ -275,7 +275,7 @@ public struct WebMediaCaptureCandidate: Hashable, Identifiable, Sendable {
         tagID: String,
         isInvisible: Bool
     ) {
-        self.playlistInfo = WebMediaInfo(
+        self.mediaInfo = WebMediaInfo(
             name: name,
             src: sourceURL?.absoluteString ?? "",
             pageSrc: pageURL?.absoluteString ?? "",
@@ -288,26 +288,26 @@ public struct WebMediaCaptureCandidate: Hashable, Identifiable, Sendable {
         )
     }
 
-    init(_ playlistInfo: WebMediaInfo) {
-        self.playlistInfo = playlistInfo
+    init(_ mediaInfo: WebMediaInfo) {
+        self.mediaInfo = mediaInfo
     }
 
-    public var id: String { playlistInfo.id }
-    public var name: String { playlistInfo.name }
-    public var sourceURL: URL? { playlistInfo.sourceURL }
-    public var pageURL: URL? { playlistInfo.pageURL }
-    public var pageTitle: String { playlistInfo.pageTitle }
-    public var mimeType: String { playlistInfo.mimeType }
-    public var duration: TimeInterval { playlistInfo.duration }
-    public var detected: Bool { playlistInfo.detected }
-    public var tagID: String { playlistInfo.tagId }
-    public var isInvisible: Bool { playlistInfo.isInvisible }
-    public var preferredDisplayName: String { playlistInfo.preferredDisplayName }
-    public var playbackKind: WebMediaCapturePlaybackKind { .init(playlistInfo.playbackKind) }
-    public var isBlobLike: Bool { playlistInfo.isBlobSource || playlistInfo.isDataSource }
-    public var isLikelyAdvertisement: Bool { playlistInfo.isLikelyAdvertisement }
+    public var id: String { mediaInfo.id }
+    public var name: String { mediaInfo.name }
+    public var sourceURL: URL? { mediaInfo.sourceURL }
+    public var pageURL: URL? { mediaInfo.pageURL }
+    public var pageTitle: String { mediaInfo.pageTitle }
+    public var mimeType: String { mediaInfo.mimeType }
+    public var duration: TimeInterval { mediaInfo.duration }
+    public var detected: Bool { mediaInfo.detected }
+    public var tagID: String { mediaInfo.tagId }
+    public var isInvisible: Bool { mediaInfo.isInvisible }
+    public var preferredDisplayName: String { mediaInfo.preferredDisplayName }
+    public var playbackKind: WebMediaCapturePlaybackKind { .init(mediaInfo.playbackKind) }
+    public var isBlobLike: Bool { mediaInfo.isBlobSource || mediaInfo.isDataSource }
+    public var isLikelyAdvertisement: Bool { mediaInfo.isLikelyAdvertisement }
 
-    var rawValue: WebMediaInfo { playlistInfo }
+    var rawValue: WebMediaInfo { mediaInfo }
 }
 
 public struct WebMediaCaptureResolvedMedia: Hashable, Sendable {
@@ -321,7 +321,7 @@ public struct WebMediaCaptureResolvedMedia: Hashable, Sendable {
         resolutionMethod: WebMediaCaptureResolutionMethod
     ) {
         self.resolvedMedia = ResolvedWebMedia(
-            playlistInfo: candidate.rawValue,
+            mediaInfo: candidate.rawValue,
             url: url,
             mimeType: mimeType,
             requestHeaders: requestHeaders,
@@ -333,7 +333,7 @@ public struct WebMediaCaptureResolvedMedia: Hashable, Sendable {
         self.resolvedMedia = resolvedMedia
     }
 
-    public var candidate: WebMediaCaptureCandidate { .init(resolvedMedia.playlistInfo) }
+    public var candidate: WebMediaCaptureCandidate { .init(resolvedMedia.mediaInfo) }
     public var url: URL { resolvedMedia.url }
     public var mimeType: String? { resolvedMedia.mimeType }
     public var requestHeaders: [String: String] { resolvedMedia.requestHeaders }
@@ -532,7 +532,7 @@ public struct WebMediaCaptureStoredMedia: Hashable, Identifiable, Sendable {
     }
 
     public var id: String { storedMedia.id }
-    public var candidate: WebMediaCaptureCandidate { .init(storedMedia.playlistInfo) }
+    public var candidate: WebMediaCaptureCandidate { .init(storedMedia.mediaInfo) }
     public var storageScope: WebMediaCaptureStorageScope { .init(storedMedia.storageScope) }
     public var retentionPolicy: WebMediaCaptureRetentionPolicy { .init(storedMedia.retentionPolicy) }
     public var resolvedMediaURL: URL { storedMedia.resolvedMediaURL }
