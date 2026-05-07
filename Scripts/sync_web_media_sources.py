@@ -16,9 +16,9 @@ SOURCE_MAP = {
     DEFAULT_BRAVE_CORE_ROOT / "UserContent" / "UserScripts" / "__firefox__.js":
         DESTINATION_ROOT / "UserScripts" / "__firefox__.js",
     DEFAULT_BRAVE_CORE_ROOT / "UserContent" / "UserScripts" / "Scripts_Dynamic" / "Scripts" / "Paged" / "PlaylistScript.js":
-        DESTINATION_ROOT / "UserScripts" / "PlaylistScript.js",
+        DESTINATION_ROOT / "UserScripts" / "WebMediaDetectorScript.js",
     DEFAULT_BRAVE_CORE_ROOT / "UserContent" / "UserScripts" / "Scripts_Dynamic" / "Scripts" / "Paged" / "PlaylistSwizzlerScript.js":
-        DESTINATION_ROOT / "UserScripts" / "PlaylistSwizzlerScript.js",
+        DESTINATION_ROOT / "UserScripts" / "WebMediaSwizzlerScript.js",
 }
 
 IDENTIFIER_REWRITE_MAP = {
@@ -155,7 +155,7 @@ CANONICAL_FILE_CANDIDATES = {
     "WebMediaLibrary.swift": ["WebMediaLibrary.swift", "MediaLibrary.swift", "PlaylistLibrary.swift"],
     "WebMediaStreamer.swift": ["WebMediaStreamer.swift", "MediaStreamer.swift", "PlaylistMediaStreamer.swift"],
     "WebMediaMimeTypeDetector.swift": ["WebMediaMimeTypeDetector.swift", "MediaMimeTypeDetector.swift", "PlaylistMimeTypeDetector.swift"],
-    "WebMediaOfflineStore.swift": ["WebMediaOfflineStore.swift", "OfflineMediaStore.swift", "PlaylistOfflineMediaStore.swift"],
+    "WebMediaOfflineStore.swift": ["WebMediaOfflineStore.swift", "PlaylistOfflineMediaStore.swift"],
     "WebMediaScriptEngine.swift": ["WebMediaScriptEngine.swift", "MediaScriptEngine.swift", "PlaylistScriptEngine.swift"],
     "WebMediaScriptMessage.swift": ["WebMediaScriptMessage.swift", "MediaScriptMessage.swift", "PlaylistScriptMessage.swift"],
     "WebMediaSupport.swift": ["WebMediaSupport.swift", "MediaWebSupport.swift", "PlaylistWebSupport.swift"],
@@ -167,6 +167,12 @@ TEXT_REWRITE_PATHS = [
 ]
 
 SWIFT_SOURCE_ROOT = REPO_ROOT / "Sources" / "WebMedia"
+
+SCRIPT_REWRITE_MAP = {
+    'includeOnce("Playlist"': 'includeOnce("WebMedia"',
+    "$<playlistLongPressed>": "$<webMediaLongPressed>",
+    "$<playlistProcessDocumentLoad>": "$<webMediaProcessDocumentLoad>",
+}
 
 
 def rewrite_text(text: str) -> str:
@@ -181,6 +187,16 @@ def rewrite_file(path: Path) -> None:
     if rewritten != original:
         path.write_text(rewritten)
         print(f"rewrote {path}")
+
+
+def rewrite_script_file(path: Path) -> None:
+    original = path.read_text()
+    rewritten = original
+    for source, destination in SCRIPT_REWRITE_MAP.items():
+        rewritten = rewritten.replace(source, destination)
+    if rewritten != original:
+        path.write_text(rewritten)
+        print(f"rewrote script {path}")
 
 
 def rename_overlay_files() -> None:
@@ -221,7 +237,16 @@ def main() -> int:
     for source, destination in SOURCE_MAP.items():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+        rewrite_script_file(destination)
         print(f"synced {source} -> {destination}")
+
+    for stale_resource in [
+        DESTINATION_ROOT / "UserScripts" / "PlaylistScript.js",
+        DESTINATION_ROOT / "UserScripts" / "PlaylistSwizzlerScript.js",
+    ]:
+        if stale_resource.exists():
+            stale_resource.unlink()
+            print(f"removed stale generated resource {stale_resource}")
 
     rename_overlay_files()
 

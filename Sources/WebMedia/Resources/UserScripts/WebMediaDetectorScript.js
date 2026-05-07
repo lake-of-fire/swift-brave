@@ -5,7 +5,7 @@
 
 // MARK: - Media Detection
 
-window.__firefox__.includeOnce("Playlist", function($) {
+window.__firefox__.includeOnce("WebMedia", function($) {
   function is_nan(value) {
     return typeof value === "number" && value !== value;
   }
@@ -173,7 +173,7 @@ window.__firefox__.includeOnce("Playlist", function($) {
   }
 
   function setupLongPress() {
-    Object.defineProperty(window.__firefox__, '$<playlistLongPressed>', {
+    Object.defineProperty(window.__firefox__, '$<webMediaLongPressed>', {
       enumerable: false,
       configurable: false,
       writable: false,
@@ -395,7 +395,7 @@ window.__firefox__.includeOnce("Playlist", function($) {
       }
 
       // Needed for Japanese videos like tver.jp which literally never loads automatically
-      Object.defineProperty(window.__firefox__, '$<playlistProcessDocumentLoad>', {
+      Object.defineProperty(window.__firefox__, '$<webMediaProcessDocumentLoad>', {
         enumerable: false,
         configurable: false,
         writable: false,

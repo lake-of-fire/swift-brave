@@ -147,6 +147,9 @@ final class WebMediaTests: XCTestCase {
         XCTAssertTrue(scripts.detectorSource.contains("mediaCurrentTimeFromTag_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("webMediaTelemetryAttached_namespace"))
         XCTAssertTrue(scripts.detectorSource.contains("window.webkit.messageHandlers"))
+        XCTAssertFalse(scripts.detectorSource.contains("playlistProcessDocumentLoad"))
+        XCTAssertFalse(scripts.detectorSource.contains("playlistLongPressed"))
+        XCTAssertFalse(scripts.detectorSource.contains("includeOnce(\"Playlist\""))
         XCTAssertTrue(scripts.firefoxShimSource.contains("window.__firefox__"))
         XCTAssertTrue(scripts.mediaSourceOverrideSource.contains("delete window.MediaSource;"))
     }
@@ -789,6 +792,63 @@ final class WebMediaTests: XCTestCase {
         let reencodedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
         XCTAssertNotNil(reencodedObject["mediaInfo"])
         XCTAssertNil(reencodedObject["playlistInfo"])
+    }
+
+    func testOfflineStoreDecodesLegacyPlaylistInfoMetadataAndReencodesMediaInfo() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let item = WebMediaInfo(
+            name: "Legacy Episode",
+            src: "https://cdn.example.com/legacy.m4a",
+            pageSrc: "https://example.com/watch?v=legacy",
+            pageTitle: "Legacy Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "legacy-episode",
+            isInvisible: false
+        )
+        let stored = try await fixture.store.download(
+            ResolvedWebMedia(
+                mediaInfo: item,
+                url: URL(string: "https://cdn.example.com/legacy.m4a?token=1")!,
+                mimeType: "audio/mp4",
+                requestHeaders: [:],
+                resolutionMethod: .direct
+            ),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+
+        let metadataURL = fixture.rootURL
+            .appendingPathComponent("transient", isDirectory: true)
+            .appendingPathComponent(stored.id, isDirectory: true)
+            .appendingPathComponent("metadata.json", isDirectory: false)
+        var metadataObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as? [String: Any]
+        )
+        metadataObject["playlistInfo"] = metadataObject.removeValue(forKey: "mediaInfo")
+        var resolvedMediaObject = try XCTUnwrap(metadataObject["resolvedMedia"] as? [String: Any])
+        resolvedMediaObject["playlistInfo"] = resolvedMediaObject.removeValue(forKey: "mediaInfo")
+        metadataObject["resolvedMedia"] = resolvedMediaObject
+        try JSONSerialization
+            .data(withJSONObject: metadataObject)
+            .write(to: metadataURL, options: .atomic)
+
+        let loaded = try await fixture.store.allStoredMedia(scope: .transient)
+        XCTAssertEqual(loaded.map(\.id), [stored.id])
+        XCTAssertEqual(loaded.first?.mediaInfo.id, item.id)
+
+        _ = try await fixture.store.touchStoredMedia(id: stored.id)
+        let reencodedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as? [String: Any]
+        )
+        XCTAssertNotNil(reencodedObject["mediaInfo"])
+        XCTAssertNil(reencodedObject["playlistInfo"])
+        let reencodedResolvedMedia = try XCTUnwrap(reencodedObject["resolvedMedia"] as? [String: Any])
+        XCTAssertNotNil(reencodedResolvedMedia["mediaInfo"])
+        XCTAssertNil(reencodedResolvedMedia["playlistInfo"])
     }
 
     func testOfflineStoreReusesExistingCandidateWithoutRedownloading() async throws {

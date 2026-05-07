@@ -57,16 +57,16 @@ public enum WebMediaScriptEngine {
         configuration: WebMediaScriptConfiguration
     ) throws -> WebMediaBuiltScriptSet {
         let firefoxShimSource = try loadResource(named: "__firefox__")
-        let swizzler = try loadResource(named: "PlaylistSwizzlerScript")
-        let detector = try loadResource(named: "PlaylistScript")
+        let swizzler = try loadResource(named: "WebMediaSwizzlerScript")
+        let detector = try loadResource(named: "WebMediaDetectorScript")
 
         let detectorSource = secureScript(
             handlerNamesMap: [
                 "$<message_handler>": configuration.messageHandlerName,
                 "$<tagUUID>": configuration.tagAttributeName,
                 "$<sendMessageTimeout>": configuration.sendMessageTimeoutName,
-                "$<playlistLongPressed>": configuration.longPressFunctionName,
-                "$<playlistProcessDocumentLoad>": configuration.processDocumentLoadFunctionName,
+                "$<webMediaLongPressed>": configuration.longPressFunctionName,
+                "$<webMediaProcessDocumentLoad>": configuration.processDocumentLoadFunctionName,
                 "$<mediaCurrentTimeFromTag>": configuration.currentTimeFunctionName,
                 "$<stopMediaPlayback>": configuration.stopPlaybackFunctionName,
                 "$<telemetryAttached>": configuration.telemetryAttachedName,
@@ -134,7 +134,7 @@ public enum WebMediaScriptEngine {
             Bundle.module.url(forResource: name, withExtension: "js", subdirectory: "UserScripts")
             ?? Bundle.module.url(forResource: name, withExtension: "js")
         guard let url,
-              let source = try? String(contentsOf: url)
+              let source = try? String(contentsOf: url, encoding: .utf8)
         else {
             throw WebMediaScriptError.missingResource(name)
         }
