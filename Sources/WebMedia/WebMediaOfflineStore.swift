@@ -869,10 +869,17 @@ public actor WebMediaOfflineStore {
                     withIntermediateDirectories: true
                 )
                 try fileManager.moveItem(at: legacyRootURL, to: currentRootURL)
-                return currentRootURL
             } catch {
-                return legacyRootURL
+                do {
+                    try fileManager.copyItem(at: legacyRootURL, to: currentRootURL)
+                } catch {
+                    try? fileManager.createDirectory(
+                        at: currentRootURL,
+                        withIntermediateDirectories: true
+                    )
+                }
             }
+            return currentRootURL
         }
     }
 
