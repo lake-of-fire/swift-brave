@@ -40,3 +40,5 @@ The owner should:
 - Interrupt retention transitions before/after intent, move and destination write; verify all exact retention policies, duplicate destination preservation and active-writer rejection.
 
 This is an unqualified implementation draft, not a release or assembled Reader acceptance claim.
+
+Canonical template publication: [brave-core 1c49cba](https://github.com/lake-of-fire/brave-core/commit/1c49cba393098e791649992155a86051c98b8e16). Reconciled runtime/test publication: [swift-brave d536171](https://github.com/lake-of-fire/swift-brave/commit/d536171c130d60260c54bf048665b20faf2b375c).
