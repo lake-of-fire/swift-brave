@@ -4,6 +4,11 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
+enum WebMediaOfflineStoreTesting {
+    @TaskLocal static var downloadWaiterDidRegister: (@Sendable () -> Void)? = nil
+    @TaskLocal static var beforeThumbnailPublication: (@Sendable () async -> Void)? = nil
+}
+
 public enum WebMediaOfflineStorageScope: String, Codable, CaseIterable, Sendable {
     case transient
     case persistent
@@ -424,10 +429,11 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
         return value
     }
 
-    private static func completeTailRange(_ value: String?) -> (start: Int64, total: Int64)? {
+    private static func completeTailRange(_ value: String?, knownTotal: Int64?) -> (start: Int64, total: Int64)? {
         guard let value, value.hasPrefix("bytes ") else { return nil }
         let parts = value.dropFirst(6).split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2, let total = Int64(parts[1]), total > 0 else { return nil }
+        guard parts.count == 2,
+              let total = (parts[1] == "*" ? knownTotal : Int64(parts[1])), total > 0 else { return nil }
         let bounds = parts[0].split(separator: "-", omittingEmptySubsequences: false)
         guard bounds.count == 2, let start = Int64(bounds[0]), let end = Int64(bounds[1]),
               start >= 0, start <= end, end == total - 1 else { return nil }
@@ -530,7 +536,7 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
             guard shouldAppend, let savedIdentity,
                   Self.strongETag(response.value(forHTTPHeaderField: "ETag")) == savedIdentity.etag,
                   response.url?.absoluteString == savedIdentity.responseURL,
-                  let range = Self.completeTailRange(response.value(forHTTPHeaderField: "Content-Range")),
+                  let range = Self.completeTailRange(response.value(forHTTPHeaderField: "Content-Range"), knownTotal: savedIdentity.totalLength),
                   range.start == existingByteCount,
                   savedIdentity.totalLength == nil || savedIdentity.totalLength == range.total,
                   response.expectedContentLength < 0
@@ -605,6 +611,7 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
             try Task.checkCancellation()
             guard totalBytesWritten < Int64.max,
                   expectedContentLength.map({ totalBytesWritten < $0 }) != false else {
+                try fileHandle.truncate(atOffset: UInt64(shouldAppend ? existingByteCount : 0))
                 try? FileManager.default.removeItem(at: identityURL)
                 throw WebMediaOfflineStoreError.invalidResponse
             }
@@ -638,6 +645,10 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
 
         try Task.checkCancellation()
         guard expectedContentLength.map({ totalBytesWritten == $0 }) != false else {
+            if shouldAppend {
+                try fileHandle.truncate(atOffset: UInt64(existingByteCount))
+                throw WebMediaOfflineStoreError.invalidResponse
+            }
             throw WebMediaOfflineStoreError.downloadNotFinished
         }
         try fileHandle.synchronize()
@@ -862,6 +873,11 @@ private final class WebMediaHLSDownloadOperation: NSObject, AVAssetDownloadDeleg
 }
 
 public actor WebMediaOfflineStore {
+    private struct ActiveDownload: Sendable {
+        let attemptID: UUID
+        let task: Task<Void, Never>
+    }
+
     private struct EventSubscription: Sendable {
         let idFilter: String?
         let continuation: AsyncStream<WebMediaDownloadEvent>.Continuation
@@ -978,11 +994,14 @@ public actor WebMediaOfflineStore {
         }
     }
 
+    public static let shared = WebMediaOfflineStore()
+
     private let configuration: Configuration
     private let downloader: any WebMediaArtifactDownloading
     private let urlSession: URLSession
-    private var activeDownloads: [String: Task<Void, Never>] = [:]
-    private var downloadWaiters: [String: [CheckedContinuation<StoredWebMedia, Error>]] = [:]
+    private var activeDownloads: [String: ActiveDownload] = [:]
+    private var thumbnailAttempts: [String: UUID] = [:]
+    private var downloadWaiters: [String: [UUID: CheckedContinuation<StoredWebMedia, Error>]] = [:]
     private var eventSubscriptions: [UUID: EventSubscription] = [:]
 
     public init(
@@ -1047,9 +1066,9 @@ public actor WebMediaOfflineStore {
             return Self.makeDownloadRecord(from: existing)
         }
 
-        let identifier = Self.storedMediaIdentifier(for: media.mediaInfo)
+        let existingRecord = try downloadRecord(for: media.mediaInfo)
+        let identifier = existingRecord?.id ?? Self.storedMediaIdentifier(for: media.mediaInfo)
         let itemDirectory = directoryURL(for: identifier, scope: storageScope)
-        let existingRecord = try currentDownloadRecord(id: identifier)
         let shouldRestart = existingRecord?.state == .failed || existingRecord?.state == .cancelled
 
         if let existingRecord, shouldRestart == false {
@@ -1064,6 +1083,8 @@ public actor WebMediaOfflineStore {
         let resolvedRetentionPolicy = retentionPolicy ?? .default(for: storageScope)
         let metadata: StoredWebMediaMetadata
         if shouldRestart, var existingMetadata = try loadMetadata(id: identifier) {
+            let currentDirectory = directoryURL(for: identifier, scope: existingMetadata.storageScope)
+            try preserveDownloadPartial(in: currentDirectory, metadata: &existingMetadata)
             existingMetadata = try transitionStorage(
                 existingMetadata, to: storageScope, retentionPolicy: resolvedRetentionPolicy
             )
@@ -1124,6 +1145,7 @@ public actor WebMediaOfflineStore {
     }
 
     public func waitForDownload(id: String) async throws -> StoredWebMedia {
+        try Task.checkCancellation()
         if let stored = try storedMedia(id: id) {
             return stored
         }
@@ -1150,9 +1172,27 @@ public actor WebMediaOfflineStore {
             startDownload(identifier: id)
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            downloadWaiters[id, default: []].append(continuation)
-        }
+        let waiterID = UUID()
+        let result: StoredWebMedia = try await withTaskCancellationHandler(
+            operation: {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation { continuation in
+                    guard Task.isCancelled == false else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    downloadWaiters[id, default: [:]][waiterID] = continuation
+                    WebMediaOfflineStoreTesting.downloadWaiterDidRegister?()
+                }
+            },
+            onCancel: {
+                Task {
+                    await self.cancelDownloadWaiter(id: id, waiterID: waiterID)
+                }
+            }
+        )
+        try Task.checkCancellation()
+        return result
     }
 
     public func restorePendingDownloads(
@@ -1182,11 +1222,11 @@ public actor WebMediaOfflineStore {
             return nil
         }
 
-        if let task = activeDownloads[id] {
-            task.cancel()
-            _ = await task.value
+        if let activeDownload = activeDownloads[id] {
+            activeDownload.task.cancel()
+            _ = await activeDownload.task.value
         } else if metadata.state == .queued || metadata.state == .downloading {
-            await markDownloadCancelled(identifier: id)
+            markDownloadCancelled(identifier: id)
         }
 
         return try currentDownloadRecord(id: id)
@@ -1203,6 +1243,10 @@ public actor WebMediaOfflineStore {
 
         if metadata.state == .downloaded {
             return metadata.makeDownloadRecord(rootDirectory: directoryURL(for: id, scope: metadata.storageScope))
+        }
+
+        if activeDownloads[id] != nil {
+            throw WebMediaOfflineStoreError.downloadNotFinished
         }
 
         metadata.state = .queued
@@ -1222,7 +1266,7 @@ public actor WebMediaOfflineStore {
     }
 
     public func downloadRecord(for item: WebMediaInfo) throws -> WebMediaDownloadRecord? {
-        try allDownloadRecords().first(where: { $0.candidateLookupKey == item.candidateLookupKey })
+        try allDownloadRecords().first(where: { $0.mediaInfo.resourceLookupKey == item.resourceLookupKey })
     }
 
     public func currentDownloadRecord(id: String) throws -> WebMediaDownloadRecord? {
@@ -1248,7 +1292,7 @@ public actor WebMediaOfflineStore {
     public func storedMedia(for item: WebMediaInfo) throws -> StoredWebMedia? {
         guard let metadata = try (
             loadAllMetadata()
-                .filter { $0.state == .downloaded && $0.mediaInfo.candidateLookupKey == item.candidateLookupKey }
+                .filter { $0.state == .downloaded && $0.mediaInfo.resourceLookupKey == item.resourceLookupKey }
                 .sorted(by: Self.preferredStoredMetadataOrdering)
                 .first
         )
@@ -1309,6 +1353,9 @@ public actor WebMediaOfflineStore {
             throw WebMediaOfflineStoreError.mediaNotFound
         }
 
+        guard metadata.state == .downloaded else {
+            throw WebMediaOfflineStoreError.downloadNotFinished
+        }
         if metadata.storageScope == storageScope {
             guard let stored = metadata.makeStoredMedia(rootDirectory: directoryURL(for: id, scope: storageScope)) else {
                 throw WebMediaOfflineStoreError.mediaNotFound
@@ -1353,6 +1400,9 @@ public actor WebMediaOfflineStore {
             throw WebMediaOfflineStoreError.mediaNotFound
         }
 
+        guard metadata.state == .downloaded else {
+            throw WebMediaOfflineStoreError.downloadNotFinished
+        }
         guard activeDownloads[id] == nil else {
             throw WebMediaOfflineStoreError.downloadInProgress
         }
@@ -1375,33 +1425,38 @@ public actor WebMediaOfflineStore {
 
     public func deleteStoredMedia(id: String) throws {
         let existingRecord = try currentDownloadRecord(id: id)
-        activeDownloads[id]?.cancel()
-        activeDownloads[id] = nil
+        thumbnailAttempts.removeValue(forKey: id)
+        activeDownloads.removeValue(forKey: id)?.task.cancel()
         finishWaiters(id: id, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
-        try deleteDirectoryIfPresent(directoryURL(for: id, scope: .persistent))
-        try deleteDirectoryIfPresent(directoryURL(for: id, scope: .transient))
+        for scope in WebMediaOfflineStorageScope.allCases {
+            try deleteDirectoryIfPresent(directoryURL(for: id, scope: scope))
+            try deleteDirectoryIfPresent(downloadStagingRoot(for: id, scope: scope))
+        }
         emit(WebMediaDownloadEvent(id: id, kind: .deleted, record: existingRecord))
     }
 
     public func deleteAllStoredMedia(scope: WebMediaOfflineStorageScope? = nil) throws {
+        let records = try allDownloadRecords().filter { scope == nil || $0.storageScope == scope }
+        let recordIDs = Set(records.map(\.id))
+        for record in records {
+            thumbnailAttempts.removeValue(forKey: record.id)
+            activeDownloads.removeValue(forKey: record.id)?.task.cancel()
+            finishWaiters(id: record.id, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
+        }
+        if scope == nil {
+            thumbnailAttempts.removeAll()
+            let activeIDs = Array(activeDownloads.keys)
+            for id in activeIDs where recordIDs.contains(id) == false {
+                activeDownloads.removeValue(forKey: id)?.task.cancel()
+                finishWaiters(id: id, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
+            }
+        }
+
         let scopes = scope.map { [$0] } ?? WebMediaOfflineStorageScope.allCases
         for targetScope in scopes {
             let rootURL = rootURL(for: targetScope)
             if FileManager.default.fileExists(atPath: rootURL.path) {
                 try FileManager.default.removeItem(at: rootURL)
-            }
-        }
-        if scope == nil {
-            for (id, task) in activeDownloads {
-                task.cancel()
-                finishWaiters(id: id, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
-            }
-            activeDownloads.removeAll()
-        } else if let scope {
-            for record in try allDownloadRecords() where record.storageScope == scope {
-                activeDownloads[record.id]?.cancel()
-                activeDownloads.removeValue(forKey: record.id)
-                finishWaiters(id: record.id, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
             }
         }
         try prepareRootsIfNeeded()
@@ -1468,6 +1523,7 @@ public actor WebMediaOfflineStore {
 
     @discardableResult
     public func ensureThumbnail(id: String) async throws -> StoredWebMedia? {
+        try Task.checkCancellation()
         guard var metadata = try loadMetadata(id: id) else {
             throw WebMediaOfflineStoreError.mediaNotFound
         }
@@ -1491,24 +1547,59 @@ public actor WebMediaOfflineStore {
             return metadata.makeStoredMedia(rootDirectory: itemDirectory)
         }
 
+        let thumbnailAttemptID = UUID()
+        thumbnailAttempts[id] = thumbnailAttemptID
+        let thumbnailDirectory = thumbnailStagingDirectory(
+            attemptID: thumbnailAttemptID
+        )
+        defer {
+            if thumbnailAttempts[id] == thumbnailAttemptID {
+                thumbnailAttempts.removeValue(forKey: id)
+            }
+            try? deleteDirectoryIfPresent(thumbnailDirectory)
+        }
+        try FileManager.default.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
+
         let mediaURL = itemDirectory.appendingPathComponent(mediaRelativePath, isDirectory: false)
-        metadata.thumbnailRelativePath = try await storeThumbnail(
+        let thumbnailRelativePath = try await storeThumbnail(
             metadata.thumbnailRequest,
             mediaURL: mediaURL,
-            directory: itemDirectory,
+            directory: thumbnailDirectory,
             shouldMaterializeImmediately: true
         )
-        metadata.updatedAt = Date()
-        try writeMetadata(metadata, in: itemDirectory)
+
+        await WebMediaOfflineStoreTesting.beforeThumbnailPublication?()
+
+        try Task.checkCancellation()
+        guard thumbnailAttempts[id] == thumbnailAttemptID,
+              var currentMetadata = try loadMetadata(id: id),
+              currentMetadata.state == .downloaded,
+              currentMetadata.mediaInfo.resourceLookupKey == metadata.mediaInfo.resourceLookupKey,
+              currentMetadata.mediaRelativePath == mediaRelativePath
+        else {
+            return nil
+        }
+
+        let currentDirectory = directoryURL(for: id, scope: currentMetadata.storageScope)
+        if let thumbnailRelativePath {
+            try publishArtifact(
+                relativePath: thumbnailRelativePath,
+                from: thumbnailDirectory,
+                to: currentDirectory
+            )
+        }
+        currentMetadata.thumbnailRelativePath = thumbnailRelativePath
+        currentMetadata.updatedAt = Date()
+        try writeMetadata(currentMetadata, in: currentDirectory)
         emit(
             WebMediaDownloadEvent(
                 id: id,
                 kind: .thumbnailAvailable,
-                record: metadata.makeDownloadRecord(rootDirectory: itemDirectory),
-                storedMedia: metadata.makeStoredMedia(rootDirectory: itemDirectory)
+                record: currentMetadata.makeDownloadRecord(rootDirectory: currentDirectory),
+                storedMedia: currentMetadata.makeStoredMedia(rootDirectory: currentDirectory)
             )
         )
-        return metadata.makeStoredMedia(rootDirectory: itemDirectory)
+        return currentMetadata.makeStoredMedia(rootDirectory: currentDirectory)
     }
 
     public func enforceTransientStoragePolicy() throws {
@@ -1531,29 +1622,99 @@ public actor WebMediaOfflineStore {
             return
         }
 
-        activeDownloads[identifier] = Task {
-            await self.performDownload(identifier: identifier, onProgress: onProgress)
+        let attemptID = UUID()
+        thumbnailAttempts.removeValue(forKey: identifier)
+        let task = Task {
+            await self.performDownload(
+                identifier: identifier,
+                attemptID: attemptID,
+                onProgress: onProgress
+            )
         }
+        activeDownloads[identifier] = ActiveDownload(attemptID: attemptID, task: task)
     }
 
     private func performDownload(
         identifier: String,
+        attemptID: UUID,
         onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
     ) async {
+        defer {
+            removeActiveDownload(identifier: identifier, attemptID: attemptID)
+        }
+
         do {
+            guard isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID) else {
+                return
+            }
             guard var metadata = try loadMetadata(id: identifier) else {
                 finishWaiters(id: identifier, result: .failure(WebMediaOfflineStoreError.mediaNotFound))
-                activeDownloads.removeValue(forKey: identifier)
                 return
             }
 
             let itemDirectory = directoryURL(for: identifier, scope: metadata.storageScope)
+            let stagingDirectory = downloadStagingDirectory(
+                for: identifier,
+                scope: metadata.storageScope,
+                attemptID: attemptID
+            )
             try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            let existingPartialURL = itemDirectory.appendingPathComponent(
+                WebMediaAssetDownloader.partialMediaFilename,
+                isDirectory: false
+            )
+            let stagedPartialURL = stagingDirectory.appendingPathComponent(
+                WebMediaAssetDownloader.partialMediaFilename,
+                isDirectory: false
+            )
+            let previousStagingDirectory = metadata.downloadAttemptIdentifier.map {
+                downloadStagingDirectory(for: identifier, scope: metadata.storageScope, attemptID: $0)
+            }
+            let interruptedPartialURL = previousStagingDirectory?.appendingPathComponent(
+                WebMediaAssetDownloader.partialMediaFilename, isDirectory: false
+            )
+            let resumePartialURL = interruptedPartialURL.flatMap {
+                FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
+            } ?? existingPartialURL
+            defer {
+                // Preserve the current attempt's partial bytes on an orderly
+                // failure or cancellation. Deleted/superseded attempts own no files.
+                var shouldDeleteStagingDirectory = true
+                if isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID),
+                   FileManager.default.fileExists(atPath: stagedPartialURL.path) {
+                    do {
+                        try publishPartial(from: stagingDirectory, to: itemDirectory)
+                    } catch {
+                        // Keep the durable attempt pointer usable if moving the
+                        // partial file fails. Terminal-state publication retries it.
+                        shouldDeleteStagingDirectory = false
+                    }
+                }
+                if shouldDeleteStagingDirectory {
+                    try? deleteDirectoryIfPresent(stagingDirectory)
+                }
+            }
+            if FileManager.default.fileExists(atPath: resumePartialURL.path) {
+                try FileManager.default.copyItem(at: resumePartialURL, to: stagedPartialURL)
+                let resumeIdentityURL = resumePartialURL.deletingLastPathComponent()
+                    .appendingPathComponent(WebMediaAssetDownloader.partialIdentityFilename)
+                if FileManager.default.fileExists(atPath: resumeIdentityURL.path) {
+                    try FileManager.default.copyItem(
+                        at: resumeIdentityURL,
+                        to: stagingDirectory.appendingPathComponent(WebMediaAssetDownloader.partialIdentityFilename)
+                    )
+                }
+            }
 
             metadata.state = .downloading
+            // Persist the working directory's identity before suspending so
+            // restorePendingDownloads can resume it after process termination.
+            metadata.downloadAttemptIdentifier = attemptID
             metadata.updatedAt = Date()
             metadata.failureDescription = nil
             try writeMetadata(metadata, in: itemDirectory)
+            if let previousStagingDirectory { try? deleteDirectoryIfPresent(previousStagingDirectory) }
             emit(
                 WebMediaDownloadEvent(
                     id: identifier,
@@ -1564,27 +1725,44 @@ public actor WebMediaOfflineStore {
 
             let artifact = try await downloader.download(
                 media: metadata.resolvedMedia.makeResolvedMedia(),
-                into: itemDirectory,
+                into: stagingDirectory,
                 identifier: identifier,
                 onProgress: { progress in
                     Task {
-                        await self.updateProgress(identifier: identifier, progress: progress)
-                        onProgress(progress)
+                        await self.updateProgress(
+                            identifier: identifier,
+                            attemptID: attemptID,
+                            progress: progress,
+                            onProgress: onProgress
+                        )
                     }
                 }
             )
 
             try Task.checkCancellation()
 
-            let mediaURL = itemDirectory.appendingPathComponent(artifact.relativeMediaPath, isDirectory: false)
+            guard isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID),
+                  let currentMetadata = try loadMetadata(id: identifier),
+                  currentMetadata.state == .downloading
+            else {
+                return
+            }
+
+            metadata = currentMetadata
+            let currentItemDirectory = directoryURL(for: identifier, scope: metadata.storageScope)
+
+            let mediaURL = stagingDirectory.appendingPathComponent(artifact.relativeMediaPath, isDirectory: false)
             let thumbnailRelativePath = try await storeThumbnail(
                 metadata.thumbnailRequest,
                 mediaURL: mediaURL,
-                directory: itemDirectory,
+                directory: stagingDirectory,
                 shouldMaterializeImmediately: metadata.thumbnailRequest.loadingPolicy == .eager
             )
 
+            try Task.checkCancellation()
+
             metadata.state = .downloaded
+            metadata.downloadAttemptIdentifier = nil
             metadata.updatedAt = Date()
             metadata.downloadedAt = Date()
             metadata.lastAccessedAt = metadata.downloadedAt
@@ -1605,10 +1783,26 @@ public actor WebMediaOfflineStore {
                 requestHeaders: metadata.resolvedMedia.requestHeaders,
                 resolutionMethod: metadata.resolvedMedia.resolutionMethod
             )
-            guard let stored = metadata.makeStoredMedia(rootDirectory: itemDirectory) else {
+            guard isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID) else {
+                return
+            }
+            try deletePayloadFiles(in: currentItemDirectory)
+            try publishArtifact(
+                relativePath: artifact.relativeMediaPath,
+                from: stagingDirectory,
+                to: currentItemDirectory
+            )
+            if let thumbnailRelativePath {
+                try publishArtifact(
+                    relativePath: thumbnailRelativePath,
+                    from: stagingDirectory,
+                    to: currentItemDirectory
+                )
+            }
+            guard let stored = metadata.makeStoredMedia(rootDirectory: currentItemDirectory) else {
                 throw WebMediaOfflineStoreError.downloadNotFinished
             }
-            try writeMetadata(metadata, in: itemDirectory)
+            try writeMetadata(metadata, in: currentItemDirectory)
 
             if metadata.storageScope == .transient {
                 let pageLookupKeys = Set(
@@ -1622,22 +1816,28 @@ public actor WebMediaOfflineStore {
                 WebMediaDownloadEvent(
                     id: identifier,
                     kind: .completed,
-                    record: metadata.makeDownloadRecord(rootDirectory: itemDirectory),
+                    record: metadata.makeDownloadRecord(rootDirectory: currentItemDirectory),
                     storedMedia: stored
                 )
             )
 
             finishWaiters(id: identifier, result: .success(stored))
         } catch is CancellationError {
-            await markDownloadCancelled(identifier: identifier)
+            markDownloadCancelled(identifier: identifier, attemptID: attemptID)
         } catch {
-            await markDownloadFailed(identifier: identifier, error: error)
+            markDownloadFailed(identifier: identifier, attemptID: attemptID, error: error)
         }
-
-        activeDownloads.removeValue(forKey: identifier)
     }
 
-    private func updateProgress(identifier: String, progress: WebMediaDownloadProgress) {
+    private func updateProgress(
+        identifier: String,
+        attemptID: UUID,
+        progress: WebMediaDownloadProgress,
+        onProgress: @Sendable (WebMediaDownloadProgress) -> Void
+    ) {
+        guard isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID) else {
+            return
+        }
         guard var metadata = try? loadMetadata(id: identifier) else {
             return
         }
@@ -1654,9 +1854,14 @@ public actor WebMediaOfflineStore {
                 record: metadata.makeDownloadRecord(rootDirectory: itemDirectory)
             )
         )
+        onProgress(progress)
     }
 
-    private func markDownloadCancelled(identifier: String) async {
+    private func markDownloadCancelled(identifier: String, attemptID: UUID? = nil) {
+        if let attemptID,
+           isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID) == false {
+            return
+        }
         guard var metadata = try? loadMetadata(id: identifier) else {
             finishWaiters(id: identifier, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
             return
@@ -1664,6 +1869,7 @@ public actor WebMediaOfflineStore {
 
         let itemDirectory = directoryURL(for: identifier, scope: metadata.storageScope)
         metadata.state = .cancelled
+        try? preserveDownloadPartial(in: itemDirectory, metadata: &metadata)
         metadata.updatedAt = Date()
         metadata.failureDescription = nil
         metadata.mediaRelativePath = nil
@@ -1681,7 +1887,10 @@ public actor WebMediaOfflineStore {
         finishWaiters(id: identifier, result: .failure(WebMediaOfflineStoreError.downloadCancelled))
     }
 
-    private func markDownloadFailed(identifier: String, error: Error) async {
+    private func markDownloadFailed(identifier: String, attemptID: UUID, error: Error) {
+        guard isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID) else {
+            return
+        }
         guard var metadata = try? loadMetadata(id: identifier) else {
             finishWaiters(id: identifier, result: .failure(error))
             return
@@ -1689,6 +1898,7 @@ public actor WebMediaOfflineStore {
 
         let itemDirectory = directoryURL(for: identifier, scope: metadata.storageScope)
         metadata.state = .failed
+        try? preserveDownloadPartial(in: itemDirectory, metadata: &metadata)
         metadata.updatedAt = Date()
         metadata.failureDescription = error.localizedDescription
         metadata.mediaRelativePath = nil
@@ -1710,8 +1920,8 @@ public actor WebMediaOfflineStore {
         id: String,
         result: Result<StoredWebMedia, Error>
     ) {
-        let waiters = downloadWaiters.removeValue(forKey: id) ?? []
-        for waiter in waiters {
+        let waiters = downloadWaiters.removeValue(forKey: id) ?? [:]
+        for waiter in waiters.values {
             switch result {
             case .success(let stored):
                 waiter.resume(returning: stored)
@@ -1719,6 +1929,27 @@ public actor WebMediaOfflineStore {
                 waiter.resume(throwing: error)
             }
         }
+    }
+
+    private func cancelDownloadWaiter(id: String, waiterID: UUID) {
+        guard let waiter = downloadWaiters[id]?.removeValue(forKey: waiterID) else {
+            return
+        }
+        if downloadWaiters[id]?.isEmpty == true {
+            downloadWaiters.removeValue(forKey: id)
+        }
+        waiter.resume(throwing: CancellationError())
+    }
+
+    private func isCurrentDownloadAttempt(identifier: String, attemptID: UUID) -> Bool {
+        activeDownloads[identifier]?.attemptID == attemptID
+    }
+
+    private func removeActiveDownload(identifier: String, attemptID: UUID) {
+        guard isCurrentDownloadAttempt(identifier: identifier, attemptID: attemptID) else {
+            return
+        }
+        activeDownloads.removeValue(forKey: identifier)
     }
 
     private func emit(_ event: WebMediaDownloadEvent) {
@@ -1829,7 +2060,7 @@ public actor WebMediaOfflineStore {
         for scope in WebMediaOfflineStorageScope.allCases {
             let directory = directoryURL(for: id, scope: scope)
             if FileManager.default.fileExists(atPath: directory.path) {
-                return try readMetadata(from: directory)
+                return try readMetadata(from: directory, storageScope: scope)
             }
         }
         return nil
@@ -1839,14 +2070,17 @@ public actor WebMediaOfflineStore {
         try prepareRootsIfNeeded()
         var byID: [String: StoredWebMediaMetadata] = [:]
         for scope in WebMediaOfflineStorageScope.allCases {
-            for metadata in try loadMetadata(in: rootURL(for: scope)) {
+            for metadata in try loadMetadata(in: rootURL(for: scope), storageScope: scope) {
                 byID[metadata.id] = metadata
             }
         }
         return Array(byID.values)
     }
 
-    private func loadMetadata(in rootURL: URL) throws -> [StoredWebMediaMetadata] {
+    private func loadMetadata(
+        in rootURL: URL,
+        storageScope: WebMediaOfflineStorageScope
+    ) throws -> [StoredWebMediaMetadata] {
         let directoryURLs = try FileManager.default.contentsOfDirectory(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -1861,11 +2095,10 @@ public actor WebMediaOfflineStore {
             }
 
             do {
-                let metadata = try readMetadata(from: directoryURL)
+                let metadata = try readMetadata(from: directoryURL, storageScope: storageScope)
                 result.append(metadata)
             } catch {
-                // Permission, data-protection, I/O and decoding errors all preserve
-                // the original directory. Propagate uncertainty to the caller.
+                // Keep uncertain/unreadable data intact; callers can retry.
                 throw error
             }
         }
@@ -1895,6 +2128,81 @@ public actor WebMediaOfflineStore {
 
     private func directoryURL(for identifier: String, scope: WebMediaOfflineStorageScope) -> URL {
         rootURL(for: scope).appendingPathComponent(identifier, isDirectory: true)
+    }
+
+    private func downloadStagingDirectory(
+        for identifier: String,
+        scope: WebMediaOfflineStorageScope,
+        attemptID: UUID
+    ) -> URL {
+        downloadStagingRoot(for: identifier, scope: scope)
+            .appendingPathComponent(attemptID.uuidString, isDirectory: true)
+    }
+
+    private func downloadStagingRoot(for identifier: String, scope: WebMediaOfflineStorageScope) -> URL {
+        rootURL(for: scope)
+            .appendingPathComponent(".download-attempts", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
+    }
+
+    private func preserveDownloadPartial(
+        in itemDirectory: URL,
+        metadata: inout StoredWebMediaMetadata
+    ) throws {
+        guard let attemptID = metadata.downloadAttemptIdentifier else {
+            return
+        }
+        let stagingDirectory = downloadStagingDirectory(
+            for: metadata.id, scope: metadata.storageScope, attemptID: attemptID
+        )
+        let partialURL = stagingDirectory.appendingPathComponent(WebMediaAssetDownloader.partialMediaFilename)
+        if FileManager.default.fileExists(atPath: partialURL.path) {
+            try publishPartial(from: stagingDirectory, to: itemDirectory)
+        }
+        // Clear the pointer only after its resumable bytes have a durable home.
+        // On failure the terminal record retains it for a later retry.
+        metadata.downloadAttemptIdentifier = nil
+        try? deleteDirectoryIfPresent(stagingDirectory)
+    }
+
+    private func thumbnailStagingDirectory(
+        attemptID: UUID
+    ) -> URL {
+        // A completed item can change retention while its thumbnail is loading.
+        // Its working directory must survive deletion of the old storage scope.
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("WebMedia-thumbnail-\(attemptID.uuidString)", isDirectory: true)
+    }
+
+    private func publishPartial(from stagingDirectory: URL, to itemDirectory: URL) throws {
+        let destinationIdentity = itemDirectory.appendingPathComponent(WebMediaAssetDownloader.partialIdentityFilename)
+        if FileManager.default.fileExists(atPath: destinationIdentity.path) {
+            try FileManager.default.removeItem(at: destinationIdentity)
+        }
+        try publishArtifact(relativePath: WebMediaAssetDownloader.partialMediaFilename,
+                            from: stagingDirectory, to: itemDirectory)
+        let sourceIdentity = stagingDirectory.appendingPathComponent(WebMediaAssetDownloader.partialIdentityFilename)
+        if FileManager.default.fileExists(atPath: sourceIdentity.path) {
+            try publishArtifact(relativePath: WebMediaAssetDownloader.partialIdentityFilename,
+                                from: stagingDirectory, to: itemDirectory)
+        }
+    }
+
+    private func publishArtifact(
+        relativePath: String,
+        from stagingDirectory: URL,
+        to itemDirectory: URL
+    ) throws {
+        let sourceURL = stagingDirectory.appendingPathComponent(relativePath, isDirectory: false)
+        let destinationURL = itemDirectory.appendingPathComponent(relativePath, isDirectory: false)
+        try FileManager.default.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
     }
 
     // Persist the complete requested transition before moving any payload. A
@@ -1934,11 +2242,20 @@ public actor WebMediaOfflineStore {
         return committed
     }
 
-    private func readMetadata(from directory: URL) throws -> StoredWebMediaMetadata {
+    private func readMetadata(
+        from directory: URL,
+        storageScope: WebMediaOfflineStorageScope
+    ) throws -> StoredWebMediaMetadata {
         let metadataURL = directory.appendingPathComponent("metadata.json", isDirectory: false)
         let data = try Data(contentsOf: metadataURL)
-        let metadata = try JSONDecoder().decode(StoredWebMediaMetadata.self, from: data)
-        return try completeStorageTransition(metadata, foundIn: directory)
+        var metadata = try JSONDecoder().decode(StoredWebMediaMetadata.self, from: data)
+        if metadata.pendingStorageTransition != nil {
+            return try completeStorageTransition(metadata, foundIn: directory)
+        }
+        // Legacy moves did not persist intent. Preserve their physical-root
+        // normalization, but never invent a lost retention request.
+        metadata.storageScope = storageScope
+        return metadata
     }
 
     private func writeMetadata(_ metadata: StoredWebMediaMetadata, in directory: URL) throws {
@@ -1978,7 +2295,7 @@ public actor WebMediaOfflineStore {
     }
 
     private static func storedMediaIdentifier(for item: WebMediaInfo) -> String {
-        let digest = SHA256.hash(data: Data(item.candidateLookupKey.utf8))
+        let digest = SHA256.hash(data: Data(item.resourceLookupKey.utf8))
         return digest.compactMap { String(format: "%02x", $0) }.joined()
     }
 
@@ -2067,6 +2384,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
     var thumbnailRelativePath: String?
     var byteCount: Int64?
     var thumbnailRequest: WebMediaThumbnailRequest
+    var downloadAttemptIdentifier: UUID? = nil
     var pendingStorageTransition: WebMediaStorageTransition? = nil
 
     private enum CodingKeys: String, CodingKey {
@@ -2087,6 +2405,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
         case thumbnailRelativePath
         case byteCount
         case thumbnailRequest
+        case downloadAttemptIdentifier
         case pendingStorageTransition
     }
 
@@ -2154,6 +2473,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
         self.thumbnailRequest =
             try container.decodeIfPresent(WebMediaThumbnailRequest.self, forKey: .thumbnailRequest)
             ?? .automatic()
+        self.downloadAttemptIdentifier = try container.decodeIfPresent(UUID.self, forKey: .downloadAttemptIdentifier)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -2174,6 +2494,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
         try container.encodeIfPresent(thumbnailRelativePath, forKey: .thumbnailRelativePath)
         try container.encodeIfPresent(byteCount, forKey: .byteCount)
         try container.encode(thumbnailRequest, forKey: .thumbnailRequest)
+        try container.encodeIfPresent(downloadAttemptIdentifier, forKey: .downloadAttemptIdentifier)
         try container.encodeIfPresent(pendingStorageTransition, forKey: .pendingStorageTransition)
     }
 
@@ -2322,4 +2643,3 @@ private enum StoredWebMediaFileSystem {
         return total
     }
 }
-

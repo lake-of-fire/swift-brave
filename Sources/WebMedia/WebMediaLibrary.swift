@@ -6,7 +6,7 @@ public actor WebMediaLibrary {
 
     public init(
         mediaStreamer: WebMediaStreamer = WebMediaStreamer(),
-        offlineStore: WebMediaOfflineStore = WebMediaOfflineStore()
+        offlineStore: WebMediaOfflineStore = .shared
     ) {
         self.mediaStreamer = mediaStreamer
         self.offlineStore = offlineStore

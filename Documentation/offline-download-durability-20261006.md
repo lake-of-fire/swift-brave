@@ -1,37 +1,42 @@
-# Offline download durability fixes
+# Reconciled WebMedia offline durability changes
 
-## Scope and integration
+## Source of truth and preserved work
 
-This draft changes only `Sources/WebMedia/WebMediaOfflineStore.swift` in SwiftBrave's WebMedia package. The media coordinator and SwiftUIDownloads are untouched.
+This revision reconciles the five offline-download fixes with the actual October 6 local SwiftBrave snapshot, instead of replacing it with the older published file. The snapshot's base was `84f2ba37df3992db73f62b99a3389cee886cbce5`; the original offline-store SHA-256 was `c0692fd5985018f0f3032b75610e628374c69c7598b2e995db8f83d52a9340a4`.
 
-Base: published `lake-of-fire/swift-brave` main, `84f2ba37df3992db73f62b99a3389cee886cbce5`. The supplied review points to a newer local Reader checkout. Its exact SwiftBrave revision has not been provided and the published Reader v3-hotfix `.gitmodules` does not list SwiftBrave. **Do not replace the local file wholesale or assume this draft is already integrated with that checkout.** Apply/reconcile this draft with the actual media branch before selecting a Reader dependency pin.
+The local changes in WebMediaInfo.swift and WebMediaLibrary.swift are preserved unchanged. The existing staged download attempts, UUID ownership fences, cancellation-aware waiters, thumbnail ownership, partial recovery and physical-root normalization are retained in WebMediaOfflineStore.swift. Existing local tests are retained; HTTP-resume fixtures now provide a strong representation validator. Two additional regressions cover changed ETags and preservation of unreadable persistent metadata. None of the tests have been run in this task.
 
-## Changes
+The canonical source is now represented in the companion [brave-core draft PR #1](https://github.com/lake-of-fire/brave-core/pull/1): `spm/templates/swift-brave/Sources/WebMedia`, its resources, `Tests/WebMediaTests`, the sync script, and the WebMedia package target/dependency. The generated-output companion is [swift-brave draft PR #1](https://github.com/lake-of-fire/swift-brave/pull/1).
 
-1. Native HLS work uses a fresh operation per invocation. One serial queue owns registration, cancellation, delegate callbacks, file completion and exactly-once continuation completion. A cancellation latch survives cancellation before registration; callbacks must match their session/task.
-2. File resumption requires a saved strong ETag, request fingerprint, final response URL and compatible representation length. Requests use identity encoding and `If-Range`. A 206 response must match that identity and describe the complete expected tail; received length is checked before completion. Unvalidated legacy partials restart, and a mismatched response invalidates resume identity without appending. Resume metadata stores a hash of request headers, never their plaintext values.
-3. The completed result is formed before the atomic downloaded metadata write. Subsequent transient cache maintenance is best-effort and cannot route an already committed download through destructive failure handling.
-4. Metadata read/decode failures propagate while preserving the directory. They no longer imply permission to delete a persistent or transient download.
-5. Scope/retention updates share a durable transition intent containing both target scope and exact retention policy. Intent is atomically written before the move; reads recover from either location and clear intent only after destination metadata commits. Conflicting destination copies are preserved and reported. Retry relocation uses the same primitive. Active downloads reject retention/scope mutation until their operation finishes, rather than moving files out from under a live writer.
+The generator is `make-spm` → `spm/make_spm.py`: clear output except .git/.gitignore, copy templates, copy upstream adblock sources, apply ordered patches, then optional build/tests. Do not run it over a dirty package. The template manifest retains the local generated package's Swift 6.2 and platform/product/dependency shape while using the generator's existing local XCFramework target path. No binary was rebuilt or release checksum changed.
 
-## Verification intentionally not run
+## Five corrections
 
-At the user's request, no build, typecheck, lint, tests, simulator run or runtime verification was performed. This is an implementation draft, not a qualification or release claim.
+1. Each HLS invocation owns a serial operation queue, cancellation latch, session/task identity and exactly-once continuation completion. Late callbacks cannot finish a reused downloader's new operation.
+2. Partial file resume requires a saved strong ETag, request fingerprint, final response URL and compatible total size. It uses If-Range and identity encoding, validates Content-Range, and checks body size. Unknown-total responses require the saved validator's known total. Invalid tails do not publish a final artifact; completed malformed range bodies roll back to the original prefix. Legacy partials without valid identity restart.
+3. The final downloaded metadata write is the commit point. Optional cache maintenance cannot send an already committed download through destructive failure handling.
+4. Metadata read/decode errors preserve the original directory and propagate rather than deleting uncertain data.
+5. Scope/retention changes atomically persist target scope and the exact requested retention policy before moving. Recovery uses that intent from either location, preserves conflicting copies, and clears intent only after destination metadata commits. Existing completed-only preconditions and active-writer exclusion remain.
 
-The owner should reconcile the correct local base, then cover:
+The resume identity sidecar travels with partial bytes through the local attempt staging/recovery paths. Destination identity is removed before replacing bytes, so a crash between the two file moves cannot combine a new prefix with an old validator. Missing identity safely causes a fresh download.
 
-- HLS cancellation before registration, during creation, during progress and racing success/error; duplicate and old callbacks; reuse of one public downloader for overlapping invocations.
-- Full 200, valid 206, ignored range returning 200, changed/missing/weak ETag, changed redirect URL, encoded response, malformed/multipart Content-Range, short/long body, 416, cancellation and restart at each sidecar/truncate/write boundary.
-- A committed persistent/transient download surviving permission/I/O failures during optional cleanup, while waiters receive success once.
-- Metadata locked by data protection, permission failures, invalid JSON and unavailable directories, with original bytes preserved and errors surfaced.
-- All scope/retention transitions interrupted before/after intent write, move and final metadata write; exact `.untilPageChange` / `.untilSessionEnds` / `.manualTransient` recovery; conflicting destination copies; active-writer rejection and retry after completion.
+## Upstream comparison
 
-Safe behavior changes: servers without a usable strong validator restart downloads rather than range-resume; invalid range attempts fail without corrupting the prefix and the next explicit retry starts fresh. Metadata enumeration may throw instead of silently discarding an unreadable item. Cache cleanup failures may leave extra transient files until a later cleanup attempt. Ambiguous duplicate move destinations require explicit recovery rather than automatic deletion.
+Brave [#38461](https://github.com/brave/brave-core/pull/38461), merged July 29, 2026 (`aa85c139bb84ab0431c4e7490734a97f1da84ad9`), is a useful item/UUID startup-cancellation design reference. It does not prove this custom continuation-based HLS operation or all post-probe start races are safe.
 
-## Generator and upstream investigation (October 6)
+Brave [#35862](https://github.com/brave/brave-core/pull/35862) reconciles stale bookmarks/missing cached files; [#38650](https://github.com/brave/brave-core/pull/38650) adds LRU reclamation. Neither supplies this custom partial-append validation or persistent/transient retention transaction model. No wholesale upstream update or blind cherry-pick was made. Existing license/provenance notices are retained.
 
-The published generator is in `lake-of-fire/brave-core`, not `swift-brave-core`: `make-spm` calls `spm/make_spm.py` (blob `33d7fd5a779b62069d835c698289e2de144f9c4c`). It clears destination entries except `.git`/`.gitignore`, copies templates and adblock sources, and applies `spm/patches/*.patch`. Published master and `codex/reader-hotfix-integration` currently lack a WebMedia Swift template; their five patches concern adblock. `swift-brave/Scripts/sync_web_media_sources.py` copies three Brave JavaScript files and rewrites existing Swift overlays, rather than supplying the offline-store implementation. Therefore this output-side patch is not yet a durable generator-side reconciliation. Locate/publish the actual local overlay first. Do not run the generator over unpreserved newer media work.
+## Deliberately unrun owner verification
 
-Brave upstream [#38461](https://github.com/brave/brave-core/pull/38461), merged July 29 (`aa85c139bb84ab0431c4e7490734a97f1da84ad9`), adds pending item/UUID ownership and startup cancellation in PlaylistManager. Adapt that ownership idea rather than blindly cherry-picking its CoreData/Playlist integration. The inspected October 6 upstream implementation does not establish complete post-probe/pre-start cancellation fencing for this custom checked-continuation HLS wrapper.
+Per the user's instruction, no generation, build, typecheck, lint, test or runtime verification was run for this reconciliation. The read-only Mac investigator previously ran one whitespace-only git diff check on the original worktree; that is not evidence for this changed code.
 
-Upstream [#35862](https://github.com/brave/brave-core/pull/35862) addresses stale bookmarks/missing cached files and [#38650](https://github.com/brave/brave-core/pull/38650) adds LRU reclamation. Neither supplies WebMedia's representation-validated partial-file appending or persistent/transient retention transaction model. A wholesale Brave update is not a demonstrated fix for these custom-layer issues. Preserve upstream license/provenance notices if copying code. This investigation was read-only; no execution qualification was added.
+The owner should:
+- Preserve and reconcile any edits newer than the captured local snapshot before integrating these draft branches. No local repository, Reader pin, generated project or coordinator was changed here.
+- Reconcile the generator branch with the desired brave-core checkout. Its local `d8cf473` divergence changes unrelated SwiftUI access modifiers and was not overwritten or merged.
+- Generate in an isolated disposable output directory, then compile and run the owning SwiftBrave suites.
+- Exercise HLS cancellation before registration and racing completion, duplicate callbacks and concurrent downloader reuse.
+- Cover validated/changed/missing/weak ETags, redirects, 200/206/416, encoded/short/long responses, and interrupted byte/sidecar transfers.
+- Inject metadata/cache I/O failures around the completion commit; verify successful downloads remain intact.
+- Interrupt retention transitions before/after intent, move and destination write; verify all exact retention policies, duplicate destination preservation and active-writer rejection.
+
+This is an unqualified implementation draft, not a release or assembled Reader acceptance claim.

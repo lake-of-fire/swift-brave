@@ -889,6 +889,195 @@ final class WebMediaTests: XCTestCase {
         XCTAssertEqual(fixture.downloader.downloadCallCount, 1)
     }
 
+    func testOfflineStoreSeparatesSameCandidateSourcesAndReusesSourceFragments() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+        let pageSource = "https://example.com/watch?v=resource-identity"
+        let firstItem = WebMediaInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/episode.m4a?source=A#first",
+            pageSrc: pageSource,
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-resource",
+            isInvisible: false
+        )
+        let secondItem = WebMediaInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/episode.m4a?source=B#first",
+            pageSrc: pageSource,
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-resource",
+            isInvisible: false
+        )
+        let matchingFragment = WebMediaInfo(
+            name: "Episode",
+            src: "https://cdn.example.com/episode.m4a?source=A#second",
+            pageSrc: pageSource,
+            pageTitle: "Episode Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "episode-resource",
+            isInvisible: false
+        )
+
+        let first = try await fixture.store.download(
+            ResolvedWebMedia(
+                mediaInfo: firstItem,
+                url: URL(string: firstItem.src)!,
+                mimeType: "audio/mp4",
+                requestHeaders: [:],
+                resolutionMethod: .direct
+            ),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+        let second = try await fixture.store.download(
+            ResolvedWebMedia(
+                mediaInfo: secondItem,
+                url: URL(string: secondItem.src)!,
+                mimeType: "audio/mp4",
+                requestHeaders: [:],
+                resolutionMethod: .direct
+            ),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+        let matchingSource = try await fixture.store.download(
+            ResolvedWebMedia(
+                mediaInfo: matchingFragment,
+                url: URL(string: matchingFragment.src)!,
+                mimeType: "audio/mp4",
+                requestHeaders: [:],
+                resolutionMethod: .direct
+            ),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(first.id, matchingSource.id)
+        XCTAssertEqual(fixture.downloader.downloadCallCount, 2)
+        XCTAssertEqual(try String(decoding: Data(contentsOf: first.localMediaURL), as: UTF8.self), "media-1")
+        XCTAssertEqual(try String(decoding: Data(contentsOf: second.localMediaURL), as: UTF8.self), "media-2")
+        let storedFirst = try await fixture.store.storedMedia(for: firstItem)
+        let storedSecond = try await fixture.store.storedMedia(for: secondItem)
+        let firstRecord = try await fixture.store.downloadRecord(for: firstItem)
+        let secondRecord = try await fixture.store.downloadRecord(for: secondItem)
+        let fragmentRecord = try await fixture.store.downloadRecord(for: matchingFragment)
+        let originalByIdentifier = try await fixture.store.storedMedia(id: first.id)
+        XCTAssertEqual(storedFirst?.id, first.id)
+        XCTAssertEqual(storedSecond?.id, second.id)
+        XCTAssertEqual(firstRecord?.id, first.id)
+        XCTAssertEqual(secondRecord?.id, second.id)
+        XCTAssertEqual(fragmentRecord?.id, first.id)
+        XCTAssertEqual(originalByIdentifier?.id, first.id)
+    }
+
+    func testOfflineStoreReusesMatchingLegacyDownloadedQueuedAndFailedIdentifiers() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+        let pageSource = "https://example.com/watch?v=legacy-resource-identity"
+        let downloadedItem = WebMediaInfo(
+            name: "Downloaded",
+            src: "https://cdn.example.com/downloaded.m4a?token=1#old",
+            pageSrc: pageSource,
+            pageTitle: "Legacy Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "legacy-downloaded",
+            isInvisible: false
+        )
+        let queuedItem = WebMediaInfo(
+            name: "Queued",
+            src: "https://cdn.example.com/queued.m4a?token=1#old",
+            pageSrc: pageSource,
+            pageTitle: "Legacy Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "legacy-queued",
+            isInvisible: false
+        )
+        let failedItem = WebMediaInfo(
+            name: "Failed",
+            src: "https://cdn.example.com/failed.m4a?token=1#old",
+            pageSrc: pageSource,
+            pageTitle: "Legacy Page",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "legacy-failed",
+            isInvisible: false
+        )
+        let downloadedIdentifier = makeLegacyStoredMediaIdentifier(for: downloadedItem)
+        let queuedIdentifier = makeLegacyStoredMediaIdentifier(for: queuedItem)
+        let failedIdentifier = makeLegacyStoredMediaIdentifier(for: failedItem)
+        let now = Date()
+
+        try writeLegacyMetadata(
+            for: downloadedItem,
+            identifier: downloadedIdentifier,
+            state: .downloaded,
+            rootURL: fixture.rootURL,
+            downloadedAt: now,
+            mediaRelativePath: "media.mp4"
+        )
+        let downloadedDirectory = fixture.rootURL
+            .appendingPathComponent("transient", isDirectory: true)
+            .appendingPathComponent(downloadedIdentifier, isDirectory: true)
+        try Data("legacy".utf8).write(to: downloadedDirectory.appendingPathComponent("media.mp4"))
+        try writeLegacyMetadata(
+            for: queuedItem,
+            identifier: queuedIdentifier,
+            state: .queued,
+            rootURL: fixture.rootURL
+        )
+        try writeLegacyMetadata(
+            for: failedItem,
+            identifier: failedIdentifier,
+            state: .failed,
+            rootURL: fixture.rootURL
+        )
+
+        let matchingDownloaded = matchingFragmentItem(from: downloadedItem)
+        let matchingQueued = matchingFragmentItem(from: queuedItem)
+        let matchingFailed = matchingFragmentItem(from: failedItem)
+        let downloaded = try await fixture.store.download(
+            resolvedMedia(for: matchingDownloaded), storageScope: .transient, thumbnail: .none
+        )
+        let queued = try await fixture.store.enqueueDownload(
+            resolvedMedia(for: matchingQueued), storageScope: .transient, thumbnail: .none
+        )
+        let completedQueued = try await fixture.store.waitForDownload(id: queued.id)
+        let failed = try await fixture.store.enqueueDownload(
+            resolvedMedia(for: matchingFailed), storageScope: .transient, thumbnail: .none
+        )
+        let completedFailed = try await fixture.store.waitForDownload(id: failed.id)
+
+        XCTAssertEqual(downloaded.id, downloadedIdentifier)
+        XCTAssertEqual(queued.id, queuedIdentifier)
+        XCTAssertEqual(failed.id, failedIdentifier)
+        XCTAssertEqual(completedQueued.id, queuedIdentifier)
+        XCTAssertEqual(completedFailed.id, failedIdentifier)
+        XCTAssertEqual(fixture.downloader.downloadCallCount, 2)
+        for item in [downloadedItem, queuedItem, failedItem] {
+            var replacement = item
+            replacement.src = item.src.replacingOccurrences(of: "token=1", with: "token=2")
+            let wrongResource = try await fixture.store.storedMedia(for: replacement)
+            let wrongRecord = try await fixture.store.downloadRecord(for: replacement)
+            XCTAssertNil(wrongResource)
+            XCTAssertNil(wrongRecord)
+        }
+    }
+
     func testOfflineStorePromotesTransientMediaToPersistentWithoutRedownloading() async throws {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
@@ -1020,6 +1209,66 @@ final class WebMediaTests: XCTestCase {
             try Data(contentsOf: try XCTUnwrap(withThumbnail?.localThumbnailURL)),
             thumbnailData
         )
+    }
+
+    func testThumbnailPublicationPreservesConcurrentAccessAndPromotion() async throws {
+        try await assertSuspendedThumbnailPublication(replacesMedia: false)
+    }
+
+    func testThumbnailPublicationRejectsDeletedAndReplacedMedia() async throws {
+        try await assertSuspendedThumbnailPublication(replacesMedia: true)
+    }
+
+    private func assertSuspendedThumbnailPublication(replacesMedia: Bool) async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+        let thumbnailData = Data("thumbnail".utf8)
+        let item = WebMediaInfo(
+            name: "Thumbnail", src: "https://example.com/thumbnail.m4a",
+            pageSrc: "https://example.com/thumbnail", pageTitle: "Thumbnail",
+            mimeType: "audio/mp4", duration: 10, detected: true, tagId: "thumbnail", isInvisible: false
+        )
+        let original = try await fixture.store.download(
+            resolvedMedia(for: item), storageScope: .transient,
+            thumbnail: .init(loadingPolicy: .lazy, generateFromMedia: false,
+                             imageData: thumbnailData, fileExtension: "jpg")
+        )
+        let barrier = WebMediaPublicationBarrier()
+        let thumbnailTask = Task {
+            try await WebMediaOfflineStoreTesting.$beforeThumbnailPublication.withValue({ await barrier.suspend() }) {
+                try await fixture.store.ensureThumbnail(id: original.id)
+            }
+        }
+        await barrier.waitUntilArrived()
+        do {
+            if replacesMedia {
+                try await fixture.store.deleteStoredMedia(id: original.id)
+                _ = try await fixture.store.download(
+                    resolvedMedia(for: item), storageScope: .transient, thumbnail: .none
+                )
+            } else {
+                _ = try await fixture.store.updateRetentionPolicy(.persistent, for: original.id)
+                _ = try await fixture.store.touchStoredMedia(id: original.id)
+                try await fixture.store.purgeTransientMedia()
+            }
+        } catch {
+            await barrier.release()
+            _ = try? await thumbnailTask.value
+            throw error
+        }
+        await barrier.release()
+        let result = try await thumbnailTask.value
+        let storedMedia = try await fixture.store.storedMedia(id: original.id)
+        let current = try XCTUnwrap(storedMedia)
+        if replacesMedia {
+            XCTAssertNil(result)
+            XCTAssertNil(current.localThumbnailURL)
+            XCTAssertEqual(try Data(contentsOf: current.localMediaURL), Data("media-2".utf8))
+        } else {
+            XCTAssertEqual(result?.storageScope, .persistent)
+            XCTAssertEqual(current.retentionPolicy, .persistent)
+            XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(current.localThumbnailURL)), thumbnailData)
+        }
     }
 
     func testOfflineStorePersistsAndUpdatesRetentionPolicy() async throws {
@@ -1162,6 +1411,60 @@ final class WebMediaTests: XCTestCase {
         XCTAssertEqual(pageMedia.count, 1)
     }
 
+    func testWebMediaLibrariesShareAnInjectedOfflineStore() async throws {
+        let fixture = try makeGatedOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        URLProtocolStub.handler = { request in
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "audio/mp4"]
+            )!
+            return (response, Data())
+        }
+
+        let firstLibrary = WebMediaLibrary(
+            mediaStreamer: WebMediaStreamer(urlSession: makeSession()),
+            offlineStore: fixture.store
+        )
+        let secondLibrary = WebMediaLibrary(
+            mediaStreamer: WebMediaStreamer(urlSession: makeSession()),
+            offlineStore: fixture.store
+        )
+        let item = WebMediaInfo(
+            name: "Shared episode",
+            src: "https://cdn.example.com/shared.m4a",
+            pageSrc: "https://example.com/watch?v=shared",
+            pageTitle: "Shared episode",
+            mimeType: "audio/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "shared-episode",
+            isInvisible: false
+        )
+
+        let firstRecord = try await firstLibrary.enqueueDownload(
+            item,
+            storageScope: .persistent,
+            thumbnail: .none
+        )
+        await fixture.gate.waitForStarts(1)
+        let secondRecord = try await secondLibrary.enqueueDownload(
+            item,
+            storageScope: .persistent,
+            thumbnail: .none
+        )
+        let startedCount = await fixture.gate.currentStartCount()
+        await fixture.gate.releaseNext(with: Data("shared".utf8))
+        let storedMedia = try await secondLibrary.waitForDownload(id: secondRecord.id)
+
+        XCTAssertEqual(firstRecord.id, secondRecord.id)
+        XCTAssertEqual(storedMedia.id, firstRecord.id)
+        XCTAssertEqual(startedCount, 1)
+    }
+
     func testWebMediaLibraryExposesBestStoredMediaAndRetentionUpdates() async throws {
         let fixture = try makeOfflineStoreFixture()
         defer { fixture.cleanup() }
@@ -1262,6 +1565,144 @@ final class WebMediaTests: XCTestCase {
         XCTAssertEqual(retried.state, .queued)
         let stored = try await store.waitForDownload(id: record.id)
         XCTAssertEqual(try String(decoding: Data(contentsOf: stored.localMediaURL), as: UTF8.self), "finished")
+    }
+
+    func testCancellingDownloadWaiterLeavesSharedDownloadRunning() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let gate = ArtifactDownloadGate()
+        let downloader = GatedArtifactDownloader(gate: gate)
+        let store = WebMediaOfflineStore(
+            configuration: .init(
+                persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
+                transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
+                excludeFromBackup: false
+            ),
+            downloader: downloader,
+            urlSession: makeSession()
+        )
+        let item = WebMediaInfo(
+            name: "Waiting episode",
+            src: "https://cdn.example.com/waiting.mp4",
+            pageSrc: "https://example.com/watch?v=waiting",
+            pageTitle: "Waiting episode",
+            mimeType: "audio/mp4",
+            duration: 10,
+            detected: true,
+            tagId: "waiting-episode",
+            isInvisible: false
+        )
+        let record = try await store.enqueueDownload(
+            resolvedMedia(for: item),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+        let waiterRegistered = expectation(description: "cancelled client's waiter registered")
+        let waiter = Task { () -> Bool in
+            await WebMediaOfflineStoreTesting.$downloadWaiterDidRegister.withValue({ waiterRegistered.fulfill() }) {
+                do {
+                    _ = try await store.waitForDownload(id: record.id)
+                    return false
+                } catch {
+                    return error is CancellationError
+                }
+            }
+        }
+        let peer = Task { try await store.waitForDownload(id: record.id) }
+
+        await gate.waitForStarts(1)
+        await fulfillment(of: [waiterRegistered], timeout: 2)
+        waiter.cancel()
+
+        let waiterWasCancelled = await waiter.value
+        let isDownloading = try await store.isDownloading(id: record.id)
+        XCTAssertTrue(waiterWasCancelled)
+        XCTAssertTrue(isDownloading)
+        await gate.releaseNext(with: Data("completed".utf8))
+        let peerStoredMedia = try await peer.value
+        XCTAssertEqual(try String(decoding: Data(contentsOf: peerStoredMedia.localMediaURL), as: UTF8.self), "completed")
+    }
+
+    func testScopedDeletionCancelsTrackedDownloadBeforeRemovingItsDirectory() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let gate = ArtifactDownloadGate()
+        let store = WebMediaOfflineStore(
+            configuration: .init(
+                persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
+                transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
+                excludeFromBackup: false
+            ),
+            downloader: GatedArtifactDownloader(gate: gate),
+            urlSession: makeSession()
+        )
+        let item = WebMediaInfo(
+            name: "Transient episode",
+            src: "https://cdn.example.com/transient.mp4",
+            pageSrc: "https://example.com/watch?v=transient",
+            pageTitle: "Transient episode",
+            mimeType: "audio/mp4",
+            duration: 10,
+            detected: true,
+            tagId: "transient-episode",
+            isInvisible: false
+        )
+        let record = try await store.enqueueDownload(
+            resolvedMedia(for: item),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+
+        await gate.waitForStarts(1)
+        try await store.deleteAllStoredMedia(scope: .transient)
+
+        let isDownloading = try await store.isDownloading(id: record.id)
+        let currentRecord = try await store.currentDownloadRecord(id: record.id)
+        XCTAssertFalse(isDownloading)
+        XCTAssertNil(currentRecord)
+        await gate.releaseNext(with: Data())
+        await gate.waitForFinishedArtifacts(1)
+    }
+
+    func testLateDeletedAttemptCannotPublishOverReplacementDownload() async throws {
+        let fixture = try makeGatedOfflineStoreFixture()
+        defer { fixture.cleanup() }
+        let item = WebMediaInfo(
+            name: "Replacement episode",
+            src: "https://cdn.example.com/replacement.mp4",
+            pageSrc: "https://example.com/watch?v=replacement",
+            pageTitle: "Replacement episode",
+            mimeType: "audio/mp4",
+            duration: 10,
+            detected: true,
+            tagId: "replacement-episode",
+            isInvisible: false
+        )
+        let original = try await fixture.store.enqueueDownload(
+            resolvedMedia(for: item),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+        await fixture.gate.waitForStarts(1)
+        try await fixture.store.deleteStoredMedia(id: original.id)
+        let replacement = try await fixture.store.enqueueDownload(
+            resolvedMedia(for: item), storageScope: .transient, thumbnail: .none
+        )
+        await fixture.gate.waitForStarts(2)
+
+        await fixture.gate.release(at: 1, with: Data("replacement".utf8))
+        let stored = try await fixture.store.waitForDownload(id: replacement.id)
+        await fixture.gate.releaseNext(with: Data("old".utf8))
+        await fixture.gate.waitForFinishedArtifacts(2)
+
+        XCTAssertEqual(original.id, replacement.id)
+        // The artifact has been written by the retired downloader before this
+        // read; its metadata and final files must still belong to the replacement.
+        XCTAssertEqual(try String(decoding: Data(contentsOf: stored.localMediaURL), as: UTF8.self), "replacement")
     }
 
     func testOfflineStoreEmitsDownloadEvents() async throws {
@@ -1506,7 +1947,7 @@ final class WebMediaTests: XCTestCase {
             requestHeaders: ["Cookie": "session=abc123"],
             resolutionMethod: .direct
         )
-        let identifier = makeStoredMediaIdentifier(for: item)
+        let identifier = makeLegacyStoredMediaIdentifier(for: item)
         let transientRoot = rootURL.appendingPathComponent("transient", isDirectory: true)
         let itemDirectory = transientRoot.appendingPathComponent(identifier, isDirectory: true)
         try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
@@ -1560,6 +2001,47 @@ final class WebMediaTests: XCTestCase {
     }
 
     func testOfflineStoreRestoresPendingDownloadsByResumingPartialFileDownload() async throws {
+        try await assertPendingPartialDownloadResumes(usesStaging: false)
+    }
+
+    func testOfflineStoreCancellingInterruptedStagedDownloadPreservesPartialForRetry() async throws {
+        try await assertPendingPartialDownloadResumes(usesStaging: true, cancelBeforeRetry: true)
+    }
+
+    func testFailedDownloadPreservesStagedPartialForRetry() async throws {
+        let rootURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let store = WebMediaOfflineStore(configuration: .init(
+            persistentRootURL: rootURL.appendingPathComponent("persistent"),
+            transientRootURL: rootURL.appendingPathComponent("transient"), excludeFromBackup: false
+        ), downloader: PartialRetryArtifactDownloader())
+        let item = WebMediaInfo(
+            name: "Partial", src: "https://example.com/partial.m4a",
+            pageSrc: "https://example.com/partial", pageTitle: "Partial",
+            mimeType: "audio/mp4", duration: 10, detected: true, tagId: "partial", isInvisible: false
+        )
+        let record = try await store.enqueueDownload(
+            resolvedMedia(for: item), storageScope: .transient, thumbnail: .none
+        )
+        do {
+            _ = try await store.waitForDownload(id: record.id)
+            XCTFail("The first attempt should fail after writing its partial bytes")
+        } catch {}
+        let failedRecord = try await store.currentDownloadRecord(id: record.id)
+        XCTAssertEqual(failedRecord?.state, .failed)
+        _ = try await store.retryDownload(id: record.id)
+        let completed = try await store.waitForDownload(id: record.id)
+        XCTAssertEqual(try Data(contentsOf: completed.localMediaURL), Data("hello world".utf8))
+    }
+
+    func testOfflineStoreResumesStagedPartialAfterProcessTermination() async throws {
+        try await assertPendingPartialDownloadResumes(usesStaging: true)
+    }
+
+    private func assertPendingPartialDownloadResumes(
+        usesStaging: Bool,
+        cancelBeforeRetry: Bool = false
+    ) async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -1582,14 +2064,22 @@ final class WebMediaTests: XCTestCase {
             requestHeaders: [:],
             resolutionMethod: .direct
         )
-        let identifier = makeStoredMediaIdentifier(for: item)
+        let identifier = makeLegacyStoredMediaIdentifier(for: item)
         let transientRoot = rootURL.appendingPathComponent("transient", isDirectory: true)
         let itemDirectory = transientRoot.appendingPathComponent(identifier, isDirectory: true)
         try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
+        let interruptedAttemptIdentifier = usesStaging ? UUID() : nil
+        let partialDirectory = interruptedAttemptIdentifier.map {
+            transientRoot.appendingPathComponent(".download-attempts", isDirectory: true)
+                .appendingPathComponent(identifier, isDirectory: true)
+                .appendingPathComponent($0.uuidString, isDirectory: true)
+        } ?? itemDirectory
+        try FileManager.default.createDirectory(at: partialDirectory, withIntermediateDirectories: true)
         try Data("hello".utf8).write(
-            to: itemDirectory.appendingPathComponent("media.partial"),
+            to: partialDirectory.appendingPathComponent("media.partial"),
             options: .atomic
         )
+        try writeResumeIdentity(for: resolvedMedia, in: partialDirectory)
         try writeMetadataFixture(
             PendingMetadataFixture(
                 id: identifier,
@@ -1611,18 +2101,20 @@ final class WebMediaTests: XCTestCase {
                 mediaRelativePath: nil,
                 thumbnailRelativePath: nil,
                 byteCount: nil,
-                thumbnailRequest: .none
+                thumbnailRequest: .none,
+                downloadAttemptIdentifier: interruptedAttemptIdentifier
             ),
             to: itemDirectory
         )
 
         URLProtocolStub.handler = { request in
             XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=5-")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Range"), "\"fixture-v1\"")
             let response = HTTPURLResponse(
                 url: try XCTUnwrap(request.url),
                 statusCode: 206,
                 httpVersion: nil,
-                headerFields: ["Content-Type": "video/mp4", "Content-Range": "bytes 5-9/10"]
+                headerFields: ["Content-Type": "video/mp4", "ETag": "\"fixture-v1\"", "Content-Range": "bytes 5-9/10"]
             )!
             return (response, Data("world".utf8))
         }
@@ -1637,11 +2129,127 @@ final class WebMediaTests: XCTestCase {
             urlSession: makeSession()
         )
 
-        _ = try await store.restorePendingDownloads()
+        if cancelBeforeRetry {
+            let cancelled = try await store.cancelDownload(id: identifier)
+            XCTAssertEqual(cancelled?.state, .cancelled)
+            XCTAssertEqual(cancelled?.storedMediaState, .cancelledTransient)
+            _ = try await store.retryDownload(id: identifier)
+        } else {
+            _ = try await store.restorePendingDownloads()
+        }
         let storedMedia = try await store.waitForDownload(id: identifier)
         XCTAssertEqual(
             try String(decoding: Data(contentsOf: storedMedia.localMediaURL), as: UTF8.self),
             "helloworld"
+        )
+    }
+
+    func testOfflineStoreDeletionRemovesOnlyMatchingDownloadAttemptDirectories() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let stored = try await fixture.store.download(
+            resolvedMedia(for: WebMediaInfo(
+                name: "Delete attempts",
+                src: "https://cdn.example.com/delete-attempts.mp4",
+                pageSrc: "https://example.com/delete-attempts",
+                pageTitle: "Delete attempts",
+                mimeType: "video/mp4",
+                duration: 42,
+                detected: true,
+                tagId: "delete-attempts",
+                isInvisible: false
+            )),
+            storageScope: .transient,
+            thumbnail: .none
+        )
+        let otherIdentifier = "other-download-attempt"
+        let transientAttempts = fixture.rootURL
+            .appendingPathComponent("transient", isDirectory: true)
+            .appendingPathComponent(".download-attempts", isDirectory: true)
+        let selectedTransientAttempt = transientAttempts.appendingPathComponent(stored.id, isDirectory: true)
+        let selectedPersistentAttempt = fixture.rootURL
+            .appendingPathComponent("persistent", isDirectory: true)
+            .appendingPathComponent(".download-attempts", isDirectory: true)
+            .appendingPathComponent(stored.id, isDirectory: true)
+        let otherAttempt = transientAttempts.appendingPathComponent(otherIdentifier, isDirectory: true)
+        for directory in [selectedTransientAttempt, selectedPersistentAttempt, otherAttempt] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("partial".utf8).write(to: directory.appendingPathComponent("media.partial"))
+        }
+
+        try await fixture.store.deleteStoredMedia(id: stored.id)
+
+        let deleted = try await fixture.store.storedMedia(id: stored.id)
+        XCTAssertNil(deleted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stored.localMediaURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: selectedTransientAttempt.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: selectedPersistentAttempt.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: otherAttempt.path))
+    }
+
+    func testOfflineStoreNormalizesScopeFromPhysicalRootAfterUnrecordedRelocation() async throws {
+        let fixture = try makeOfflineStoreFixture()
+        defer { fixture.cleanup() }
+
+        let transientItem = WebMediaInfo(
+            name: "Promoted",
+            src: "https://cdn.example.com/promoted.mp4",
+            pageSrc: "https://example.com/promoted",
+            pageTitle: "Promoted",
+            mimeType: "video/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "promoted",
+            isInvisible: false
+        )
+        let persistentItem = WebMediaInfo(
+            name: "Demoted",
+            src: "https://cdn.example.com/demoted.mp4",
+            pageSrc: "https://example.com/demoted",
+            pageTitle: "Demoted",
+            mimeType: "video/mp4",
+            duration: 42,
+            detected: true,
+            tagId: "demoted",
+            isInvisible: false
+        )
+        let promoted = try await fixture.store.download(
+            resolvedMedia(for: transientItem), storageScope: .transient, thumbnail: .none
+        )
+        let demoted = try await fixture.store.download(
+            resolvedMedia(for: persistentItem), storageScope: .persistent, thumbnail: .none
+        )
+        let transientRoot = fixture.rootURL.appendingPathComponent("transient", isDirectory: true)
+        let persistentRoot = fixture.rootURL.appendingPathComponent("persistent", isDirectory: true)
+        try FileManager.default.moveItem(
+            at: transientRoot.appendingPathComponent(promoted.id, isDirectory: true),
+            to: persistentRoot.appendingPathComponent(promoted.id, isDirectory: true)
+        )
+        try FileManager.default.moveItem(
+            at: persistentRoot.appendingPathComponent(demoted.id, isDirectory: true),
+            to: transientRoot.appendingPathComponent(demoted.id, isDirectory: true)
+        )
+
+        let normalizedPromoted = try await fixture.store.updateStorageScope(.persistent, for: promoted.id)
+        let normalizedDemoted = try await fixture.store.updateStorageScope(.transient, for: demoted.id)
+        let persistentMedia = try await fixture.store.allStoredMedia(scope: .persistent)
+        let transientMedia = try await fixture.store.allStoredMedia(scope: .transient)
+        let normalizedPromotedMedia = try await fixture.store.storedMedia(id: promoted.id)
+        let normalizedDemotedMedia = try await fixture.store.storedMedia(id: demoted.id)
+        XCTAssertEqual(normalizedPromoted.storageScope, .persistent)
+        XCTAssertEqual(normalizedDemoted.storageScope, .transient)
+        XCTAssertEqual(persistentMedia.map(\.id), [promoted.id])
+        XCTAssertEqual(transientMedia.map(\.id), [demoted.id])
+        XCTAssertEqual(normalizedPromotedMedia?.storageScope, .persistent)
+        XCTAssertEqual(normalizedDemotedMedia?.storageScope, .transient)
+        XCTAssertEqual(
+            try Data(contentsOf: try XCTUnwrap(normalizedPromotedMedia?.localMediaURL)),
+            Data("media-1".utf8)
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: try XCTUnwrap(normalizedDemotedMedia?.localMediaURL)),
+            Data("media-2".utf8)
         )
     }
 
@@ -1765,6 +2373,283 @@ final class WebMediaTests: XCTestCase {
         XCTAssertTrue(storedMedia.localMediaURL.path.hasSuffix("media.movpkg"))
     }
 
+    func testAssetDownloaderRejectsInvalidPartialContentRangesWithoutMutatingPartial() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let cases: [(name: String, contentRange: String?)] = [
+            ("absent", nil),
+            ("malformed", "not-a-range"),
+            ("wrong start", "bytes 0-4/10"),
+            ("short range", "bytes 5-7/10")
+        ]
+        let downloader = WebMediaAssetDownloader(urlSession: makeSession())
+        let media = resolvedMedia(for: WebMediaInfo(
+            name: "Range validation",
+            src: "https://cdn.example.com/range-validation.mp4",
+            pageSrc: "https://example.com/range-validation",
+            pageTitle: "Range validation",
+            mimeType: "video/mp4",
+            duration: 10,
+            detected: true,
+            tagId: "range-validation",
+            isInvisible: false
+        ))
+
+        for invalidRange in cases {
+            let directory = rootURL.appendingPathComponent(invalidRange.name, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let partialURL = directory.appendingPathComponent("media.partial", isDirectory: false)
+            try Data("hello".utf8).write(to: partialURL)
+            try writeResumeIdentity(for: media, in: directory)
+            URLProtocolStub.handler = { request in
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=5-")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "If-Range"), "\"fixture-v1\"")
+                var headers = ["Content-Type": "video/mp4", "ETag": "\"fixture-v1\""]
+                if let contentRange = invalidRange.contentRange {
+                    headers["Content-Range"] = contentRange
+                }
+                let response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 206,
+                    httpVersion: nil,
+                    headerFields: headers
+                )!
+                return (response, Data("world".utf8))
+            }
+
+            do {
+                _ = try await downloader.download(
+                    media: media,
+                    into: directory,
+                    identifier: invalidRange.name,
+                    onProgress: { _ in }
+                )
+                XCTFail("Expected invalid range \(invalidRange.name) to be rejected")
+            } catch let error as WebMediaOfflineStoreError {
+                XCTAssertEqual(error, .invalidResponse)
+            } catch {
+                XCTFail("Expected invalidResponse for \(invalidRange.name), received \(error)")
+            }
+
+            XCTAssertEqual(try Data(contentsOf: partialURL), Data("hello".utf8))
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("media.mp4", isDirectory: false).path
+            ))
+        }
+    }
+
+    func testAssetDownloaderRejectsTruncatedPartialContentRangeWithoutPublishingArtifact() async throws {
+        try await assertPartialContentBodyMismatch(Data("wor".utf8))
+    }
+
+    func testAssetDownloaderRejectsOversizedPartialContentRangeWithoutPublishingArtifact() async throws {
+        try await assertPartialContentBodyMismatch(Data("world!".utf8))
+    }
+
+    private func assertPartialContentBodyMismatch(_ payload: Data) async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let partialURL = rootURL.appendingPathComponent("media.partial", isDirectory: false)
+        try Data("hello".utf8).write(to: partialURL)
+        URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=5-")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Range"), "\"fixture-v1\"")
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 206,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "video/mp4", "ETag": "\"fixture-v1\"", "Content-Range": "bytes 5-9/10"]
+            )!
+            return (response, payload)
+        }
+
+        let downloader = WebMediaAssetDownloader(urlSession: makeSession())
+        let media = resolvedMedia(for: WebMediaInfo(
+            name: "Truncated range",
+            src: "https://cdn.example.com/truncated-range.mp4",
+            pageSrc: "https://example.com/truncated-range",
+            pageTitle: "Truncated range",
+            mimeType: "video/mp4",
+            duration: 10,
+            detected: true,
+            tagId: "truncated-range",
+            isInvisible: false
+        ))
+
+        try writeResumeIdentity(for: media, in: rootURL)
+        do {
+            _ = try await downloader.download(media: media, into: rootURL, identifier: "truncated") { _ in }
+            XCTFail("Expected mismatched range body length to be rejected")
+        } catch let error as WebMediaOfflineStoreError {
+            XCTAssertEqual(error, .invalidResponse)
+        } catch {
+            XCTFail("Expected invalidResponse for mismatched range body length, received \(error)")
+        }
+
+        XCTAssertEqual(try Data(contentsOf: partialURL), Data("hello".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: rootURL.appendingPathComponent("media.mp4", isDirectory: false).path
+        ))
+    }
+
+    func testAssetDownloaderReplacesPartialWhenServerIgnoresRange() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let partialURL = rootURL.appendingPathComponent("media.partial", isDirectory: false)
+        try Data("hello".utf8).write(to: partialURL)
+        URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=5-")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Range"), "\"fixture-v1\"")
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "video/mp4"]
+            )!
+            return (response, Data("replacement".utf8))
+        }
+
+        let downloader = WebMediaAssetDownloader(urlSession: makeSession())
+        let media = resolvedMedia(for: WebMediaInfo(
+            name: "Range ignored",
+            src: "https://cdn.example.com/range-ignored.mp4",
+            pageSrc: "https://example.com/range-ignored",
+            pageTitle: "Range ignored",
+            mimeType: "video/mp4",
+            duration: 10,
+            detected: true,
+            tagId: "range-ignored",
+            isInvisible: false
+        ))
+
+        try writeResumeIdentity(for: media, in: rootURL)
+        let artifact = try await downloader.download(
+            media: media,
+            into: rootURL,
+            identifier: "range-ignored",
+            onProgress: { _ in }
+        )
+        let finalURL = rootURL.appendingPathComponent(artifact.relativeMediaPath, isDirectory: false)
+        XCTAssertEqual(artifact.byteCount, Int64(Data("replacement".utf8).count))
+        XCTAssertEqual(try Data(contentsOf: finalURL), Data("replacement".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partialURL.path))
+    }
+
+    func testAssetDownloaderAcceptsPartialContentRangeWithUnknownTotalLength() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let partialURL = rootURL.appendingPathComponent("media.partial", isDirectory: false)
+        try Data("hello".utf8).write(to: partialURL)
+        URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=5-")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Range"), "\"fixture-v1\"")
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 206,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "video/mp4", "ETag": "\"fixture-v1\"", "Content-Range": "bytes 5-9/*"]
+            )!
+            return (response, Data("world".utf8))
+        }
+
+        let media = resolvedMedia(for: WebMediaInfo(
+            name: "Unknown total", src: "https://cdn.example.com/unknown-total.mp4",
+            pageSrc: "https://example.com/unknown-total", pageTitle: "Unknown total",
+            mimeType: "video/mp4", duration: 10, detected: true, tagId: "unknown-total", isInvisible: false
+        ))
+        let downloader = WebMediaAssetDownloader(urlSession: makeSession())
+        try writeResumeIdentity(for: media, in: rootURL)
+        let artifact = try await downloader.download(
+            media: media, into: rootURL, identifier: "unknown-total", onProgress: { _ in }
+        )
+        XCTAssertEqual(artifact.byteCount, 10)
+        XCTAssertEqual(
+            try Data(contentsOf: rootURL.appendingPathComponent(artifact.relativeMediaPath)),
+            Data("helloworld".utf8)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partialURL.path))
+    }
+
+    private func writeResumeIdentity(for media: ResolvedWebMedia, in directory: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let headers = try encoder.encode(media.requestHeaders)
+        let requestKey = SHA256.hash(data: Data(media.url.absoluteString.utf8) + headers)
+            .map { String(format: "%02x", $0) }.joined()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "requestKey": requestKey,
+            "responseURL": media.url.absoluteString,
+            "etag": "\"fixture-v1\"",
+            "totalLength": 10,
+        ])
+        try data.write(to: directory.appendingPathComponent("media.partial.identity.json"), options: .atomic)
+    }
+
+    func testAssetDownloaderRejectsChangedETagWithoutAppending() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let media = resolvedMedia(for: WebMediaInfo(
+            name: "Changed representation", src: "https://cdn.example.com/changed.mp4",
+            pageSrc: "https://example.com/changed", pageTitle: "Changed",
+            mimeType: "video/mp4", duration: 10, detected: true, tagId: "changed", isInvisible: false
+        ))
+        let partial = directory.appendingPathComponent("media.partial")
+        try Data("hello".utf8).write(to: partial)
+        try writeResumeIdentity(for: media, in: directory)
+        URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-Range"), "\"fixture-v1\"")
+            return (HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 206, httpVersion: nil,
+                                   headerFields: ["ETag": "\"fixture-v2\"", "Content-Range": "bytes 5-9/10"])!,
+                    Data("other".utf8))
+        }
+        do {
+            _ = try await WebMediaAssetDownloader(urlSession: makeSession()).download(
+                media: media, into: directory, identifier: "changed", onProgress: { _ in }
+            )
+            XCTFail("A changed representation must not be appended")
+        } catch let error as WebMediaOfflineStoreError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+        XCTAssertEqual(try Data(contentsOf: partial), Data("hello".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("media.mp4").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("media.partial.identity.json").path))
+    }
+
+    func testUnreadableMetadataPreservesPersistentPayload() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistent = root.appendingPathComponent("persistent")
+        let item = persistent.appendingPathComponent("unreadable-item")
+        try FileManager.default.createDirectory(at: item, withIntermediateDirectories: true)
+        let original = Data("persisted media".utf8)
+        try original.write(to: item.appendingPathComponent("media.mp4"))
+        try Data("invalid metadata".utf8).write(to: item.appendingPathComponent("metadata.json"))
+        let store = WebMediaOfflineStore(configuration: .init(
+            persistentRootURL: persistent, transientRootURL: root.appendingPathComponent("transient"),
+            excludeFromBackup: false
+        ))
+        do {
+            _ = try await store.allDownloadRecords()
+            XCTFail("Unreadable metadata must be surfaced")
+        } catch is DecodingError {
+            // The directory remains recoverable rather than being treated as orphaned.
+        }
+        XCTAssertEqual(try Data(contentsOf: item.appendingPathComponent("media.mp4")), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: item.appendingPathComponent("metadata.json").path))
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolStub.self]
@@ -1785,6 +2670,22 @@ final class WebMediaTests: XCTestCase {
             urlSession: makeSession()
         )
         return OfflineStoreFixture(rootURL: rootURL, store: store, downloader: downloader)
+    }
+
+    private func makeGatedOfflineStoreFixture() throws -> GatedOfflineStoreFixture {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let gate = ArtifactDownloadGate()
+        let store = WebMediaOfflineStore(
+            configuration: .init(
+                persistentRootURL: rootURL.appendingPathComponent("persistent", isDirectory: true),
+                transientRootURL: rootURL.appendingPathComponent("transient", isDirectory: true),
+                excludeFromBackup: false
+            ),
+            downloader: GatedArtifactDownloader(gate: gate),
+            urlSession: makeSession()
+        )
+        return GatedOfflineStoreFixture(rootURL: rootURL, store: store, gate: gate)
     }
 }
 
@@ -1854,6 +2755,112 @@ private struct OfflineStoreFixture {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: rootURL)
+    }
+}
+
+private struct GatedOfflineStoreFixture {
+    let rootURL: URL
+    let store: WebMediaOfflineStore
+    let gate: ArtifactDownloadGate
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+}
+
+private actor ArtifactDownloadGate {
+    private var startedCount = 0
+    private var startWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var payloadWaiters: [CheckedContinuation<Data, Never>] = []
+    private var finishedArtifactCount = 0
+    private var finishWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    func nextPayload() async -> Data {
+        startedCount += 1
+        resumeStartedWaiters()
+        return await withCheckedContinuation { continuation in
+            payloadWaiters.append(continuation)
+        }
+    }
+
+    func waitForStarts(_ count: Int) async {
+        guard startedCount < count else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            startWaiters.append((count, continuation))
+        }
+    }
+
+    func currentStartCount() -> Int {
+        startedCount
+    }
+
+    func releaseNext(with data: Data) {
+        release(at: 0, with: data)
+    }
+
+    func release(at index: Int, with data: Data) {
+        guard payloadWaiters.indices.contains(index) else {
+            return
+        }
+        payloadWaiters.remove(at: index).resume(returning: data)
+    }
+
+    func artifactDidFinish() {
+        finishedArtifactCount += 1
+        let ready = finishWaiters.filter { $0.0 <= finishedArtifactCount }
+        finishWaiters.removeAll { $0.0 <= finishedArtifactCount }
+        for (_, continuation) in ready { continuation.resume() }
+    }
+
+    func waitForFinishedArtifacts(_ count: Int) async {
+        guard finishedArtifactCount < count else { return }
+        await withCheckedContinuation { finishWaiters.append((count, $0)) }
+    }
+
+    private func resumeStartedWaiters() {
+        let readyWaiters = startWaiters.filter { $0.0 <= startedCount }
+        startWaiters.removeAll { $0.0 <= startedCount }
+        for (_, continuation) in readyWaiters {
+            continuation.resume()
+        }
+    }
+}
+
+private final class GatedArtifactDownloader: WebMediaArtifactDownloading, @unchecked Sendable {
+    private let gate: ArtifactDownloadGate
+
+    init(gate: ArtifactDownloadGate) {
+        self.gate = gate
+    }
+
+    func download(
+        media: ResolvedWebMedia,
+        into directory: URL,
+        identifier: String,
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
+        let payload = await gate.nextPayload()
+        let destinationURL = directory.appendingPathComponent("media.mp4", isDirectory: false)
+        // Deliberately ignore cancellation and recreate the obsolete attempt's
+        // directory so its late write exercises physical artifact isolation.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try payload.write(to: destinationURL, options: .atomic)
+        onProgress(
+            WebMediaDownloadProgress(
+                id: identifier,
+                fractionCompleted: 1,
+                bytesDownloaded: Int64(payload.count),
+                totalBytesExpected: Int64(payload.count)
+            )
+        )
+        await gate.artifactDidFinish()
+        return DownloadedWebMediaArtifact(
+            relativeMediaPath: "media.mp4",
+            mimeType: media.mimeType,
+            byteCount: Int64(payload.count)
+        )
     }
 }
 
@@ -2037,6 +3044,54 @@ private final class MockHLSAssetDownloader: WebMediaHLSAssetDownloading, @unchec
     }
 }
 
+private actor WebMediaPublicationBarrier {
+    private var hasArrived = false
+    private var isReleased = false
+    private var arrivals: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func suspend() async {
+        hasArrived = true
+        for continuation in arrivals { continuation.resume() }
+        arrivals.removeAll()
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilArrived() async {
+        guard !hasArrived else { return }
+        await withCheckedContinuation { arrivals.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor PartialRetryArtifactDownloader: WebMediaArtifactDownloading {
+    private var hasFailed = false
+
+    func download(
+        media: ResolvedWebMedia, into directory: URL, identifier: String,
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
+        let partialURL = directory.appendingPathComponent("media.partial")
+        if !hasFailed {
+            hasFailed = true
+            try Data("hello".utf8).write(to: partialURL)
+            throw URLError(.networkConnectionLost)
+        }
+        var payload = try Data(contentsOf: partialURL)
+        payload.append(Data(" world".utf8))
+        try payload.write(to: directory.appendingPathComponent("media.m4a"))
+        try FileManager.default.removeItem(at: partialURL)
+        return DownloadedWebMediaArtifact(relativeMediaPath: "media.m4a", mimeType: "audio/mp4",
+                                          byteCount: Int64(payload.count))
+    }
+}
+
 private struct PendingMetadataFixture: Codable {
     let id: String
     let mediaInfo: WebMediaInfo
@@ -2053,11 +3108,80 @@ private struct PendingMetadataFixture: Codable {
     let thumbnailRelativePath: String?
     let byteCount: Int64?
     let thumbnailRequest: WebMediaThumbnailRequest
+    var downloadAttemptIdentifier: UUID? = nil
 }
 
 private func makeStoredMediaIdentifier(for item: WebMediaInfo) -> String {
+    let digest = SHA256.hash(data: Data(item.resourceLookupKey.utf8))
+    return digest.compactMap { String(format: "%02x", $0) }.joined()
+}
+
+private func makeLegacyStoredMediaIdentifier(for item: WebMediaInfo) -> String {
     let digest = SHA256.hash(data: Data(item.candidateLookupKey.utf8))
     return digest.compactMap { String(format: "%02x", $0) }.joined()
+}
+
+private func matchingFragmentItem(from item: WebMediaInfo) -> WebMediaInfo {
+    var sourceComponents = URLComponents(string: item.src)
+    sourceComponents?.fragment = "matching"
+    return WebMediaInfo(
+        name: item.name,
+        src: sourceComponents?.string ?? item.src,
+        pageSrc: item.pageSrc,
+        pageTitle: item.pageTitle,
+        mimeType: item.mimeType,
+        duration: item.duration,
+        detected: item.detected,
+        tagId: item.tagId,
+        isInvisible: item.isInvisible
+    )
+}
+
+private func resolvedMedia(for item: WebMediaInfo) -> ResolvedWebMedia {
+    ResolvedWebMedia(
+        mediaInfo: item,
+        url: URL(string: item.src)!,
+        mimeType: item.normalizedMimeType,
+        requestHeaders: [:],
+        resolutionMethod: .direct
+    )
+}
+
+private func writeLegacyMetadata(
+    for item: WebMediaInfo,
+    identifier: String,
+    state: WebMediaDownloadState,
+    rootURL: URL,
+    downloadedAt: Date? = nil,
+    mediaRelativePath: String? = nil
+) throws {
+    let directory = rootURL
+        .appendingPathComponent("transient", isDirectory: true)
+        .appendingPathComponent(identifier, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let now = Date()
+    try writeMetadataFixture(
+        PendingMetadataFixture(
+            id: identifier,
+            mediaInfo: item,
+            storageScope: .transient,
+            retentionPolicy: .manualTransient,
+            resolvedMedia: .init(media: resolvedMedia(for: item)),
+            state: state,
+            createdAt: now,
+            updatedAt: now,
+            downloadedAt: downloadedAt,
+            progress: state == .queued
+                ? .init(id: identifier, fractionCompleted: 0, bytesDownloaded: 0, totalBytesExpected: nil)
+                : nil,
+            failureDescription: state == .failed ? "Legacy failure" : nil,
+            mediaRelativePath: mediaRelativePath,
+            thumbnailRelativePath: nil,
+            byteCount: mediaRelativePath == nil ? nil : 6,
+            thumbnailRequest: .none
+        ),
+        to: directory
+    )
 }
 
 private func writeMetadataFixture(_ metadata: PendingMetadataFixture, to directory: URL) throws {

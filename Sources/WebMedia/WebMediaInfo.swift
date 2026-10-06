@@ -54,6 +54,12 @@ public struct WebMediaInfo: Codable, Hashable, Identifiable, Sendable {
         )
     }
 
+    /// Identifies the concrete page media resource without changing the
+    /// DOM-oriented candidate key used by page-level callers.
+    public var resourceLookupKey: String {
+        Self.resourceLookupKey(candidateLookupKey: candidateLookupKey, source: src)
+    }
+
     public var preferredDisplayName: String {
         let candidates = [name, pageTitle]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -259,6 +265,19 @@ public struct WebMediaInfo: Codable, Hashable, Identifiable, Sendable {
             .lowercased()
         let roundedDuration = Int(duration.rounded())
         return "\(pageKey)::\(sanitizedName)::\(roundedDuration)"
+    }
+
+    public static func resourceLookupKey(candidateLookupKey: String, source: String) -> String {
+        "\(candidateLookupKey)\u{1F}\(canonicalSourceLookupKey(for: source))"
+    }
+
+    public static func canonicalSourceLookupKey(for source: String) -> String {
+        guard var components = URLComponents(string: source) else {
+            return source.split(separator: "#", maxSplits: 1).first.map(String.init) ?? source
+        }
+
+        components.fragment = nil
+        return components.string ?? source
     }
 
     private enum CodingKeys: String, CodingKey {
