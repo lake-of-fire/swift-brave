@@ -380,6 +380,8 @@ public enum WebMediaOfflineStoreError: Error, Equatable {
     case downloadNotFinished
     case downloadCancelled
     case thumbnailGenerationFailed
+    case downloadInProgress
+    case storageTransitionConflict
 }
 
 public protocol WebMediaArtifactDownloading: AnyObject, Sendable {
@@ -407,6 +409,30 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
     private let urlSession: URLSession
     private let hlsDownloaderFactory: () -> WebMediaHLSAssetDownloading
     fileprivate static let partialMediaFilename = "media.partial"
+    fileprivate static let partialIdentityFilename = "media.partial.identity.json"
+
+    private struct PartialIdentity: Codable {
+        let requestKey: String
+        let responseURL: String
+        let etag: String
+        let totalLength: Int64?
+    }
+
+    private static func strongETag(_ value: String?) -> String? {
+        guard let value, value.count >= 2, value.first == "\"", value.last == "\"",
+              !value.contains("\r"), !value.contains("\n") else { return nil }
+        return value
+    }
+
+    private static func completeTailRange(_ value: String?) -> (start: Int64, total: Int64)? {
+        guard let value, value.hasPrefix("bytes ") else { return nil }
+        let parts = value.dropFirst(6).split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, let total = Int64(parts[1]), total > 0 else { return nil }
+        let bounds = parts[0].split(separator: "-", omittingEmptySubsequences: false)
+        guard bounds.count == 2, let start = Int64(bounds[0]), let end = Int64(bounds[1]),
+              start >= 0, start <= end, end == total - 1 else { return nil }
+        return (start, total)
+    }
 
     public init(
         urlSession: URLSession = .shared,
@@ -456,26 +482,84 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
             request.setValue(value, forHTTPHeaderField: header)
         }
 
-        let temporaryURL = directory.appendingPathComponent(Self.partialMediaFilename, isDirectory: false)
-        let existingByteCount = Self.fileSize(at: temporaryURL) ?? 0
-        if existingByteCount > 0 {
+        // Partial bytes are reusable only with a strong representation validator.
+        // Legacy/unvalidated partial files are restarted rather than spliced.
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(nil, forHTTPHeaderField: "Range")
+        request.setValue(nil, forHTTPHeaderField: "If-Range")
+        let temporaryURL = directory.appendingPathComponent(Self.partialMediaFilename)
+        let identityURL = directory.appendingPathComponent(Self.partialIdentityFilename)
+        let headerEncoder = JSONEncoder()
+        headerEncoder.outputFormatting = .sortedKeys
+        let headerData = try headerEncoder.encode(media.requestHeaders)
+        let requestKey = SHA256.hash(data: Data(media.url.absoluteString.utf8) + headerData)
+            .map { String(format: "%02x", $0) }.joined()
+        let savedIdentity = (try? Data(contentsOf: identityURL))
+            .flatMap { try? JSONDecoder().decode(PartialIdentity.self, from: $0) }
+        var existingByteCount = Self.fileSize(at: temporaryURL) ?? 0
+        let canResume = existingByteCount > 0
+            && savedIdentity?.requestKey == requestKey
+            && savedIdentity.map { Self.strongETag($0.etag) != nil
+                && $0.totalLength.map { existingByteCount < $0 } != false } == true
+        if canResume, let savedIdentity {
             request.setValue("bytes=\(existingByteCount)-", forHTTPHeaderField: "Range")
+            request.setValue(savedIdentity.etag, forHTTPHeaderField: "If-Range")
+        } else {
+            existingByteCount = 0
         }
 
         let (bytes, response) = try await urlSession.bytes(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw WebMediaOfflineStoreError.invalidResponse
         }
-        guard (200 ... 299).contains(response.statusCode) else {
+        guard response.statusCode == 200 || response.statusCode == 206 else {
+            if response.statusCode == 416 {
+                // A next explicit retry must start fresh; 416 is not proof of completion.
+                try? FileManager.default.removeItem(at: identityURL)
+            }
             throw WebMediaOfflineStoreError.invalidHTTPStatus(response.statusCode)
         }
-
-        let shouldAppend = existingByteCount > 0 && response.statusCode == 206
-        if shouldAppend == false, FileManager.default.fileExists(atPath: temporaryURL.path) {
-            try FileManager.default.removeItem(at: temporaryURL)
+        let encoding = response.value(forHTTPHeaderField: "Content-Encoding")?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard encoding == nil || encoding == "identity" else {
+            throw WebMediaOfflineStoreError.invalidResponse
         }
-        if FileManager.default.fileExists(atPath: temporaryURL.path) == false {
-            FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
+        let shouldAppend = canResume && response.statusCode == 206
+        let expectedContentLength: Int64?
+        if response.statusCode == 206 {
+            guard shouldAppend, let savedIdentity,
+                  Self.strongETag(response.value(forHTTPHeaderField: "ETag")) == savedIdentity.etag,
+                  response.url?.absoluteString == savedIdentity.responseURL,
+                  let range = Self.completeTailRange(response.value(forHTTPHeaderField: "Content-Range")),
+                  range.start == existingByteCount,
+                  savedIdentity.totalLength == nil || savedIdentity.totalLength == range.total,
+                  response.expectedContentLength < 0
+                    || response.expectedContentLength == range.total - range.start
+            else {
+                // Never append an unverifiable tail. Preserve bytes, invalidate
+                // only their resume identity, and let the next retry request 200.
+                try? FileManager.default.removeItem(at: identityURL)
+                throw WebMediaOfflineStoreError.invalidResponse
+            }
+            expectedContentLength = range.total
+        } else {
+            expectedContentLength = response.expectedContentLength >= 0 ? response.expectedContentLength : nil
+        }
+
+        if !shouldAppend {
+            // Invalidate identity before truncation, so an interrupted restart
+            // cannot pair an old prefix with newly written validator metadata.
+            if FileManager.default.fileExists(atPath: identityURL.path) {
+                try FileManager.default.removeItem(at: identityURL)
+            }
+            if FileManager.default.fileExists(atPath: temporaryURL.path) {
+                try FileManager.default.removeItem(at: temporaryURL)
+            }
+        }
+        if !FileManager.default.fileExists(atPath: temporaryURL.path) {
+            guard FileManager.default.createFile(atPath: temporaryURL.path, contents: nil) else {
+                throw WebMediaOfflineStoreError.downloadFailed
+            }
         }
         let fileHandle = try FileHandle(forWritingTo: temporaryURL)
         defer { try? fileHandle.close() }
@@ -484,19 +568,20 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
         } else {
             try fileHandle.truncate(atOffset: 0)
         }
-
-        let expectedContentLength: Int64? = {
-            guard response.expectedContentLength > 0 else {
-                return nil
-            }
-            return shouldAppend ? response.expectedContentLength + existingByteCount : response.expectedContentLength
-        }()
+        if let etag = Self.strongETag(response.value(forHTTPHeaderField: "ETag")),
+           let responseURL = response.url {
+            let identity = PartialIdentity(requestKey: requestKey, responseURL: responseURL.absoluteString,
+                                           etag: etag, totalLength: expectedContentLength)
+            try JSONEncoder().encode(identity).write(to: identityURL, options: .atomic)
+        }
         let responseMimeType = response.value(forHTTPHeaderField: "Content-Type")
 
         var buffer = Data()
         var sniffData = Data()
-        if shouldAppend, let existingData = try? Data(contentsOf: temporaryURL) {
-            sniffData = Data(existingData.prefix(4096))
+        if shouldAppend {
+            let reader = try FileHandle(forReadingFrom: temporaryURL)
+            defer { try? reader.close() }
+            sniffData = try reader.read(upToCount: 4096) ?? Data()
         }
         var totalBytesWritten: Int64 = shouldAppend ? existingByteCount : 0
         let flushThreshold = 64 * 1024
@@ -518,6 +603,11 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
 
         for try await byte in bytes {
             try Task.checkCancellation()
+            guard totalBytesWritten < Int64.max,
+                  expectedContentLength.map({ totalBytesWritten < $0 }) != false else {
+                try? FileManager.default.removeItem(at: identityURL)
+                throw WebMediaOfflineStoreError.invalidResponse
+            }
             buffer.append(byte)
             totalBytesWritten += 1
 
@@ -546,6 +636,13 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
             try fileHandle.write(contentsOf: buffer)
         }
 
+        try Task.checkCancellation()
+        guard expectedContentLength.map({ totalBytesWritten == $0 }) != false else {
+            throw WebMediaOfflineStoreError.downloadNotFinished
+        }
+        try fileHandle.synchronize()
+        try fileHandle.close()
+
         let fileExtension = WebMediaMimeTypeDetector.preferredFileExtension(
             url: media.url,
             mimeType: responseMimeType ?? media.mimeType,
@@ -559,6 +656,7 @@ public final class WebMediaAssetDownloader: WebMediaArtifactDownloading, @unchec
             try FileManager.default.removeItem(at: finalURL)
         }
         try FileManager.default.moveItem(at: temporaryURL, to: finalURL)
+        try? FileManager.default.removeItem(at: identityURL)
 
         onProgress(
             WebMediaDownloadProgress(
@@ -602,6 +700,27 @@ public protocol WebMediaHLSAssetDownloading: AnyObject, Sendable {
 }
 
 public final class WebMediaHLSAssetDownloader: NSObject, WebMediaHLSAssetDownloading, @unchecked Sendable {
+    public func download(
+        media: ResolvedWebMedia,
+        into directory: URL,
+        identifier: String,
+        onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
+    ) async throws -> DownloadedWebMediaArtifact {
+        // Each invocation owns its cancellation latch, session and continuation.
+        // Reusing the public downloader cannot let an old callback finish a new task.
+        let operation = WebMediaHLSDownloadOperation()
+        return try await operation.download(
+            media: media, into: directory, identifier: identifier, onProgress: onProgress
+        )
+    }
+}
+
+private final class WebMediaHLSDownloadOperation: NSObject, AVAssetDownloadDelegate, @unchecked Sendable {
+    // All mutable state and filesystem completion run on this queue. Delegate
+    // delivery and cancellation enter through it, including pre-registration cancellation.
+    private let stateQueue = DispatchQueue(label: "com.lakeoffire.webmedia.hls-operation")
+    private var cancelled = false
+    private var finished = false
     private var continuation: CheckedContinuation<DownloadedWebMediaArtifact, Error>?
     private var onProgress: (@Sendable (WebMediaDownloadProgress) -> Void)?
     private var identifier = ""
@@ -609,159 +728,135 @@ public final class WebMediaHLSAssetDownloader: NSObject, WebMediaHLSAssetDownloa
     private var temporaryLocation: URL?
     private var resolvedMimeType: String?
     private var session: AVAssetDownloadURLSession?
-    private weak var downloadTask: AVAssetDownloadTask?
+    private var downloadTask: AVAssetDownloadTask?
 
-    public func download(
+    func download(
         media: ResolvedWebMedia,
         into directory: URL,
         identifier: String,
         onProgress: @escaping @Sendable (WebMediaDownloadProgress) -> Void
     ) async throws -> DownloadedWebMediaArtifact {
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-                self.onProgress = onProgress
-                self.identifier = identifier
-                self.destinationDirectory = directory
-                self.resolvedMimeType = media.mimeType
-
-                let configuration = URLSessionConfiguration.background(
-                    withIdentifier: "com.lakeoffire.swift-brave.webmedia.hls.\(UUID().uuidString)"
-                )
-                let session = AVAssetDownloadURLSession(
-                    configuration: configuration,
-                    assetDownloadDelegate: self,
-                    delegateQueue: .main
-                )
-                self.session = session
-
-                let assetOptions = media.requestHeaders.isEmpty
-                    ? nil
-                    : ["AVURLAssetHTTPHeaderFieldsKey": media.requestHeaders]
-                let asset = AVURLAsset(url: media.url, options: assetOptions)
-                guard let task = session.makeAssetDownloadTask(
-                    asset: asset,
-                    assetTitle: media.mediaInfo.preferredDisplayName,
-                    assetArtworkData: nil,
-                    options: nil
-                ) else {
-                    continuation.resume(throwing: WebMediaOfflineStoreError.downloadFailed)
-                    self.reset()
-                    return
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                stateQueue.async {
+                    self.continuation = continuation
+                    guard !self.cancelled else {
+                        self.finish(with: .failure(CancellationError()))
+                        return
+                    }
+                    self.onProgress = onProgress
+                    self.identifier = identifier
+                    self.destinationDirectory = directory
+                    self.resolvedMimeType = media.mimeType
+                    let configuration = URLSessionConfiguration.background(
+                        withIdentifier: "com.lakeoffire.swift-brave.webmedia.hls.\(UUID().uuidString)"
+                    )
+                    let session = AVAssetDownloadURLSession(
+                        configuration: configuration,
+                        assetDownloadDelegate: self,
+                        delegateQueue: nil
+                    )
+                    self.session = session
+                    let assetOptions = media.requestHeaders.isEmpty
+                        ? nil : ["AVURLAssetHTTPHeaderFieldsKey": media.requestHeaders]
+                    let asset = AVURLAsset(url: media.url, options: assetOptions)
+                    guard let task = session.makeAssetDownloadTask(
+                        asset: asset, assetTitle: media.mediaInfo.preferredDisplayName,
+                        assetArtworkData: nil, options: nil
+                    ) else {
+                        self.finish(with: .failure(WebMediaOfflineStoreError.downloadFailed))
+                        return
+                    }
+                    self.downloadTask = task
+                    task.resume()
                 }
-
-                self.downloadTask = task
-                task.resume()
             }
         } onCancel: {
-            self.downloadTask?.cancel()
-            self.finish(with: .failure(CancellationError()))
+            self.stateQueue.async {
+                guard !self.finished else { return }
+                self.cancelled = true
+                self.downloadTask?.cancel()
+                // If registration has not run, leave the latch for it to consume.
+                if self.continuation != nil {
+                    self.finish(with: .failure(CancellationError()))
+                }
+            }
         }
+    }
+
+    private func owns(_ session: URLSession, _ task: URLSessionTask) -> Bool {
+        !finished && self.session === session && downloadTask === task
     }
 
     private func finish(with result: Result<DownloadedWebMediaArtifact, Error>) {
-        guard let continuation else {
-            return
-        }
+        guard !finished, let continuation else { return }
+        finished = true
         self.continuation = nil
-        session?.finishTasksAndInvalidate()
-        session = nil
+        let session = self.session
+        self.session = nil
         downloadTask = nil
-        switch result {
-        case .success(let artifact):
-            continuation.resume(returning: artifact)
-        case .failure(let error):
-            continuation.resume(throwing: error)
-        }
-        reset()
-    }
-
-    private func reset() {
         onProgress = nil
         temporaryLocation = nil
-        resolvedMimeType = nil
-        identifier = ""
-        destinationDirectory = URL(fileURLWithPath: "/")
-    }
-}
-
-extension WebMediaHLSAssetDownloader: AVAssetDownloadDelegate {
-    public func urlSession(
-        _ session: URLSession,
-        assetDownloadTask: AVAssetDownloadTask,
-        willDownloadTo location: URL
-    ) {
-        temporaryLocation = location
+        switch result {
+        case .success:
+            session?.finishTasksAndInvalidate()
+        case .failure:
+            session?.invalidateAndCancel()
+        }
+        continuation.resume(with: result)
     }
 
-    public func urlSession(
-        _ session: URLSession,
-        assetDownloadTask: AVAssetDownloadTask,
-        didLoad timeRange: CMTimeRange,
-        totalTimeRangesLoaded loadedTimeRanges: [NSValue],
-        timeRangeExpectedToLoad: CMTimeRange
-    ) {
+    func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask,
+                    willDownloadTo location: URL) {
+        stateQueue.async {
+            guard self.owns(session, assetDownloadTask) else { return }
+            self.temporaryLocation = location
+        }
+    }
+
+    func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask,
+                    didLoad timeRange: CMTimeRange, totalTimeRangesLoaded loadedTimeRanges: [NSValue],
+                    timeRangeExpectedToLoad: CMTimeRange) {
+        // Convert delegate objects to value data before crossing queues.
         let duration = timeRangeExpectedToLoad.duration.seconds
-        let fractionCompleted: Double
-        if duration > 0 {
-            let loaded = loadedTimeRanges
-                .map(\.timeRangeValue.duration.seconds)
-                .reduce(0, +)
-            fractionCompleted = min(1, loaded / duration)
-        } else {
-            fractionCompleted = 0
+        let loaded = loadedTimeRanges.map(\.timeRangeValue.duration.seconds).reduce(0, +)
+        let fraction = duration.isFinite && loaded.isFinite && duration > 0
+            ? max(0, min(1, loaded / duration)) : 0
+        stateQueue.async {
+            guard self.owns(session, assetDownloadTask) else { return }
+            self.onProgress?(.init(id: self.identifier, fractionCompleted: fraction,
+                                  bytesDownloaded: 0, totalBytesExpected: nil))
         }
-
-        onProgress?(
-            WebMediaDownloadProgress(
-                id: identifier,
-                fractionCompleted: fractionCompleted,
-                bytesDownloaded: 0,
-                totalBytesExpected: nil
-            )
-        )
     }
 
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error {
-            finish(with: .failure(error))
-            return
-        }
-
-        guard let temporaryLocation else {
-            finish(with: .failure(WebMediaOfflineStoreError.downloadFailed))
-            return
-        }
-
-        let fileExtension = temporaryLocation.pathExtension.isEmpty == false ? temporaryLocation.pathExtension : "movpkg"
-        let finalRelativePath = "media.\(fileExtension)"
-        let finalURL = destinationDirectory.appendingPathComponent(finalRelativePath, isDirectory: false)
-
-        do {
-            if FileManager.default.fileExists(atPath: finalURL.path) {
-                try FileManager.default.removeItem(at: finalURL)
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        stateQueue.async {
+            guard self.owns(session, task) else { return }
+            if let error {
+                self.finish(with: .failure(error))
+                return
             }
-            try FileManager.default.moveItem(at: temporaryLocation, to: finalURL)
-            let byteCount = try StoredWebMediaFileSystem.directorySize(at: finalURL)
-            onProgress?(
-                WebMediaDownloadProgress(
-                    id: identifier,
-                    fractionCompleted: 1,
-                    bytesDownloaded: byteCount,
-                    totalBytesExpected: byteCount
-                )
-            )
-            finish(
-                with: .success(
-                    DownloadedWebMediaArtifact(
-                        relativeMediaPath: finalRelativePath,
-                        mimeType: resolvedMimeType,
-                        byteCount: byteCount
-                    )
-                )
-            )
-        } catch {
-            finish(with: .failure(error))
+            guard let temporaryLocation = self.temporaryLocation else {
+                self.finish(with: .failure(WebMediaOfflineStoreError.downloadFailed))
+                return
+            }
+            let ext = temporaryLocation.pathExtension.isEmpty ? "movpkg" : temporaryLocation.pathExtension
+            let relativePath = "media.\(ext)"
+            let finalURL = self.destinationDirectory.appendingPathComponent(relativePath)
+            do {
+                if FileManager.default.fileExists(atPath: finalURL.path) {
+                    try FileManager.default.removeItem(at: finalURL)
+                }
+                try FileManager.default.moveItem(at: temporaryLocation, to: finalURL)
+                let byteCount = try StoredWebMediaFileSystem.directorySize(at: finalURL)
+                self.onProgress?(.init(id: self.identifier, fractionCompleted: 1,
+                                       bytesDownloaded: byteCount, totalBytesExpected: byteCount))
+                self.finish(with: .success(.init(relativeMediaPath: relativePath,
+                                                mimeType: self.resolvedMimeType, byteCount: byteCount)))
+            } catch {
+                self.finish(with: .failure(error))
+            }
         }
     }
 }
@@ -969,15 +1064,10 @@ public actor WebMediaOfflineStore {
         let resolvedRetentionPolicy = retentionPolicy ?? .default(for: storageScope)
         let metadata: StoredWebMediaMetadata
         if shouldRestart, var existingMetadata = try loadMetadata(id: identifier) {
-            let currentDirectory = directoryURL(for: identifier, scope: existingMetadata.storageScope)
+            existingMetadata = try transitionStorage(
+                existingMetadata, to: storageScope, retentionPolicy: resolvedRetentionPolicy
+            )
             let targetDirectory = directoryURL(for: identifier, scope: storageScope)
-            if currentDirectory != targetDirectory {
-                if FileManager.default.fileExists(atPath: targetDirectory.path) {
-                    try FileManager.default.removeItem(at: targetDirectory)
-                }
-                try FileManager.default.moveItem(at: currentDirectory, to: targetDirectory)
-            }
-            try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
             existingMetadata.mediaInfo = media.mediaInfo
             existingMetadata.storageScope = storageScope
             existingMetadata.retentionPolicy = resolvedRetentionPolicy
@@ -1226,23 +1316,17 @@ public actor WebMediaOfflineStore {
             return stored
         }
 
-        let sourceDirectory = directoryURL(for: id, scope: metadata.storageScope)
+        guard activeDownloads[id] == nil else {
+            throw WebMediaOfflineStoreError.downloadInProgress
+        }
+        let targetPolicy: WebMediaRetentionPolicy = storageScope == .persistent
+            ? .persistent
+            : (metadata.retentionPolicy == .persistent ? .manualTransient : metadata.retentionPolicy)
+        metadata = try transitionStorage(metadata, to: storageScope, retentionPolicy: targetPolicy)
         let destinationDirectory = directoryURL(for: id, scope: storageScope)
-        if FileManager.default.fileExists(atPath: destinationDirectory.path) {
-            try FileManager.default.removeItem(at: destinationDirectory)
-        }
-        try FileManager.default.moveItem(at: sourceDirectory, to: destinationDirectory)
-        metadata.storageScope = storageScope
-        if storageScope == .persistent {
-            metadata.retentionPolicy = .persistent
-        } else if metadata.retentionPolicy == .persistent {
-            metadata.retentionPolicy = .default(for: storageScope)
-        }
-        metadata.updatedAt = Date()
-        try writeMetadata(metadata, in: destinationDirectory)
-
         if storageScope == .transient {
-            try enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
+            // Storage is committed; cache maintenance cannot roll it back.
+            try? enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
         }
 
         guard let stored = metadata.makeStoredMedia(rootDirectory: destinationDirectory) else {
@@ -1269,55 +1353,14 @@ public actor WebMediaOfflineStore {
             throw WebMediaOfflineStoreError.mediaNotFound
         }
 
-        metadata.retentionPolicy = retentionPolicy
-        if retentionPolicy == .persistent, metadata.storageScope != .persistent {
-            let sourceDirectory = directoryURL(for: id, scope: metadata.storageScope)
-            let destinationDirectory = directoryURL(for: id, scope: .persistent)
-            if FileManager.default.fileExists(atPath: destinationDirectory.path) {
-                try FileManager.default.removeItem(at: destinationDirectory)
-            }
-            try FileManager.default.moveItem(at: sourceDirectory, to: destinationDirectory)
-            metadata.storageScope = .persistent
-            metadata.updatedAt = Date()
-            try writeMetadata(metadata, in: destinationDirectory)
-            emit(
-                WebMediaDownloadEvent(
-                    id: id,
-                    kind: .retentionUpdated,
-                    record: metadata.makeDownloadRecord(rootDirectory: destinationDirectory),
-                    storedMedia: metadata.makeStoredMedia(rootDirectory: destinationDirectory)
-                )
-            )
-            return metadata.makeDownloadRecord(rootDirectory: destinationDirectory)
+        guard activeDownloads[id] == nil else {
+            throw WebMediaOfflineStoreError.downloadInProgress
         }
-
-        if retentionPolicy != .persistent, metadata.storageScope == .persistent {
-            let sourceDirectory = directoryURL(for: id, scope: metadata.storageScope)
-            let destinationDirectory = directoryURL(for: id, scope: .transient)
-            if FileManager.default.fileExists(atPath: destinationDirectory.path) {
-                try FileManager.default.removeItem(at: destinationDirectory)
-            }
-            try FileManager.default.moveItem(at: sourceDirectory, to: destinationDirectory)
-            metadata.storageScope = .transient
-            metadata.updatedAt = Date()
-            try writeMetadata(metadata, in: destinationDirectory)
-            try enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
-            emit(
-                WebMediaDownloadEvent(
-                    id: id,
-                    kind: .retentionUpdated,
-                    record: metadata.makeDownloadRecord(rootDirectory: destinationDirectory),
-                    storedMedia: metadata.makeStoredMedia(rootDirectory: destinationDirectory)
-                )
-            )
-            return metadata.makeDownloadRecord(rootDirectory: destinationDirectory)
-        }
-
+        let targetScope: WebMediaOfflineStorageScope = retentionPolicy == .persistent ? .persistent : .transient
+        metadata = try transitionStorage(metadata, to: targetScope, retentionPolicy: retentionPolicy)
         let itemDirectory = directoryURL(for: id, scope: metadata.storageScope)
-        metadata.updatedAt = Date()
-        try writeMetadata(metadata, in: itemDirectory)
         if metadata.storageScope == .transient {
-            try enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
+            try? enforceTransientStoragePolicy(excluding: [id], exceptPageLookupKeys: [])
         }
         emit(
             WebMediaDownloadEvent(
@@ -1562,6 +1605,9 @@ public actor WebMediaOfflineStore {
                 requestHeaders: metadata.resolvedMedia.requestHeaders,
                 resolutionMethod: metadata.resolvedMedia.resolutionMethod
             )
+            guard let stored = metadata.makeStoredMedia(rootDirectory: itemDirectory) else {
+                throw WebMediaOfflineStoreError.downloadNotFinished
+            }
             try writeMetadata(metadata, in: itemDirectory)
 
             if metadata.storageScope == .transient {
@@ -1569,12 +1615,9 @@ public actor WebMediaOfflineStore {
                     metadata.mediaInfo.pageURL.map { WebMediaInfo.pageLookupKey(for: $0.absoluteString) }.map { [$0] }
                         ?? []
                 )
-                try enforceTransientStoragePolicy(excluding: [identifier], exceptPageLookupKeys: pageLookupKeys)
+                try? enforceTransientStoragePolicy(excluding: [identifier], exceptPageLookupKeys: pageLookupKeys)
             }
 
-            guard let stored = metadata.makeStoredMedia(rootDirectory: itemDirectory) else {
-                throw WebMediaOfflineStoreError.downloadNotFinished
-            }
             emit(
                 WebMediaDownloadEvent(
                     id: identifier,
@@ -1794,9 +1837,13 @@ public actor WebMediaOfflineStore {
 
     private func loadAllMetadata() throws -> [StoredWebMediaMetadata] {
         try prepareRootsIfNeeded()
-        return try WebMediaOfflineStorageScope.allCases.flatMap { scope in
-            try loadMetadata(in: rootURL(for: scope))
+        var byID: [String: StoredWebMediaMetadata] = [:]
+        for scope in WebMediaOfflineStorageScope.allCases {
+            for metadata in try loadMetadata(in: rootURL(for: scope)) {
+                byID[metadata.id] = metadata
+            }
         }
+        return Array(byID.values)
     }
 
     private func loadMetadata(in rootURL: URL) throws -> [StoredWebMediaMetadata] {
@@ -1817,7 +1864,9 @@ public actor WebMediaOfflineStore {
                 let metadata = try readMetadata(from: directoryURL)
                 result.append(metadata)
             } catch {
-                try? FileManager.default.removeItem(at: directoryURL)
+                // Permission, data-protection, I/O and decoding errors all preserve
+                // the original directory. Propagate uncertainty to the caller.
+                throw error
             }
         }
         return result
@@ -1848,10 +1897,48 @@ public actor WebMediaOfflineStore {
         rootURL(for: scope).appendingPathComponent(identifier, isDirectory: true)
     }
 
+    // Persist the complete requested transition before moving any payload. A
+    // restart can finish the same intent from either directory without guessing
+    // a retention policy from the directory's name.
+    private func transitionStorage(
+        _ metadata: StoredWebMediaMetadata,
+        to scope: WebMediaOfflineStorageScope,
+        retentionPolicy: WebMediaRetentionPolicy
+    ) throws -> StoredWebMediaMetadata {
+        var pending = metadata
+        let source = directoryURL(for: metadata.id, scope: metadata.storageScope)
+        pending.pendingStorageTransition = .init(scope: scope, retentionPolicy: retentionPolicy)
+        pending.updatedAt = Date()
+        try writeMetadata(pending, in: source)
+        return try completeStorageTransition(pending, foundIn: source)
+    }
+
+    private func completeStorageTransition(
+        _ metadata: StoredWebMediaMetadata,
+        foundIn directory: URL
+    ) throws -> StoredWebMediaMetadata {
+        guard let intent = metadata.pendingStorageTransition else { return metadata }
+        let destination = directoryURL(for: metadata.id, scope: intent.scope)
+        if directory.standardizedFileURL != destination.standardizedFileURL {
+            // A second copy is ambiguous. Never delete it to make a move succeed.
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                throw WebMediaOfflineStoreError.storageTransitionConflict
+            }
+            try FileManager.default.moveItem(at: directory, to: destination)
+        }
+        var committed = metadata
+        committed.storageScope = intent.scope
+        committed.retentionPolicy = intent.retentionPolicy
+        committed.pendingStorageTransition = nil
+        try writeMetadata(committed, in: destination)
+        return committed
+    }
+
     private func readMetadata(from directory: URL) throws -> StoredWebMediaMetadata {
         let metadataURL = directory.appendingPathComponent("metadata.json", isDirectory: false)
         let data = try Data(contentsOf: metadataURL)
-        return try JSONDecoder().decode(StoredWebMediaMetadata.self, from: data)
+        let metadata = try JSONDecoder().decode(StoredWebMediaMetadata.self, from: data)
+        return try completeStorageTransition(metadata, foundIn: directory)
     }
 
     private func writeMetadata(_ metadata: StoredWebMediaMetadata, in directory: URL) throws {
@@ -1878,7 +1965,8 @@ public actor WebMediaOfflineStore {
             options: [.skipsHiddenFiles]
         )
         for url in contents where url.lastPathComponent != "metadata.json"
-            && url.lastPathComponent != WebMediaAssetDownloader.partialMediaFilename {
+            && url.lastPathComponent != WebMediaAssetDownloader.partialMediaFilename
+            && url.lastPathComponent != WebMediaAssetDownloader.partialIdentityFilename {
             try? FileManager.default.removeItem(at: url)
         }
     }
@@ -1957,6 +2045,11 @@ public actor WebMediaOfflineStore {
     }
 }
 
+private struct WebMediaStorageTransition: Codable, Hashable, Sendable {
+    let scope: WebMediaOfflineStorageScope
+    let retentionPolicy: WebMediaRetentionPolicy
+}
+
 private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
     var id: String
     var mediaInfo: WebMediaInfo
@@ -1974,6 +2067,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
     var thumbnailRelativePath: String?
     var byteCount: Int64?
     var thumbnailRequest: WebMediaThumbnailRequest
+    var pendingStorageTransition: WebMediaStorageTransition? = nil
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -1993,6 +2087,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
         case thumbnailRelativePath
         case byteCount
         case thumbnailRequest
+        case pendingStorageTransition
     }
 
     init(
@@ -2033,6 +2128,9 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.pendingStorageTransition = try container.decodeIfPresent(
+            WebMediaStorageTransition.self, forKey: .pendingStorageTransition
+        )
         self.id = try container.decode(String.self, forKey: .id)
         self.mediaInfo = try container.decodeIfPresent(WebMediaInfo.self, forKey: .mediaInfo)
             ?? container.decode(WebMediaInfo.self, forKey: .legacyPlaylistInfo)
@@ -2076,6 +2174,7 @@ private struct StoredWebMediaMetadata: Codable, Hashable, Sendable {
         try container.encodeIfPresent(thumbnailRelativePath, forKey: .thumbnailRelativePath)
         try container.encodeIfPresent(byteCount, forKey: .byteCount)
         try container.encode(thumbnailRequest, forKey: .thumbnailRequest)
+        try container.encodeIfPresent(pendingStorageTransition, forKey: .pendingStorageTransition)
     }
 
     func makeStoredMedia(rootDirectory: URL) -> StoredWebMedia? {
@@ -2223,3 +2322,4 @@ private enum StoredWebMediaFileSystem {
         return total
     }
 }
+
