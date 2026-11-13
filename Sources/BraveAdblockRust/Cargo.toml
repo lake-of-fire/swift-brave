@@ -18,3 +18,11 @@ single_thread_optimizations = []
 [lib]
 name = "adblock_cxx"
 crate-type = ["rlib", "staticlib"]
+
+[profile.release]
+
+lto = "thin"
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
+strip = "symbols"

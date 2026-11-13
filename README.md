@@ -157,3 +157,7 @@ try await library.updateRetentionPolicy(.persistent, for: stored.id)
 - Run `../brave-core/make-spm /path/to/swift-brave` to regenerate locally.
 - CI release: use the `release-binary` workflow to build a zip + checksum for the
   `BraveAdblockCore.xcframework` binary target.
+
+## Durable source of truth
+
+WebMedia source, resources, and tests are maintained in `brave-core/spm/templates/swift-brave`. Make changes there and reconcile the generated output; do not run `make-spm` on a dirty destination. The generator clears its output directory. The offline durability reconciliation preserves the October 6 local attempt-ID/staging changes; verification is still required before integration.
